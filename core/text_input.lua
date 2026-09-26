@@ -1,51 +1,13 @@
 local M = {}
 local Clipboard = require('core.clipboard')
+local Util = require('core.util')
 
 local TI = {}
 TI.__index = TI
 
--- ─── UTF-8 helpers ────────────────────────────────────────
-
-local function utf8_step(s, i)
-  local b = s:byte(i)
-  if not b then
-    return 1
-  end
-  if b < 0x80 then
-    return 1
-  end
-  if b < 0xE0 then
-    return 2
-  end
-  if b < 0xF0 then
-    return 3
-  end
-  return 4
-end
-
-local function utf8_prev(s, i)
-  if i <= 1 then
-    return 1
-  end
-  local j = i - 1
-  while j > 1 do
-    local b = s:byte(j)
-    if b and b >= 0x80 and b < 0xC0 then
-      j = j - 1
-    else
-      break
-    end
-  end
-  return j
-end
-
-local function utf8_next(s, i)
-  local n = #s
-  if i > n then
-    return n + 1
-  end
-  return math.min(i + utf8_step(s, i), n + 1)
-end
+local utf8_step = Util.utf8_step
+local utf8_prev = Util.utf8_prev
+local utf8_next = Util.utf8_next
 
 local function splice(s, a, b, insert)
   return s:sub(1, a - 1) .. (insert or '') .. s:sub(b)
@@ -96,8 +58,10 @@ function M.new(ctx, opts)
   self.blink_ms = 530
 
   self.x, self.y, self.w, self.h = 0, 0, 0, 0
-  self.pad_l = opts.pad_l or 12
-  self.pad_r = opts.pad_r or 12
+  self.icon = opts.icon ~= false
+  self.clear_btn = opts.clear_btn ~= false
+  self.pad_l = opts.pad_l or (self.icon and 30 or 12)
+  self.pad_r = opts.pad_r or (self.clear_btn and 26 or 12)
   self.placeholder = opts.placeholder
   self.font_lh = ctx.get_primary_line_height()
 
@@ -128,6 +92,13 @@ end
 
 function TI:_invalidate()
   self._dirty = true
+end
+
+function TI:_emit_change()
+  self:_invalidate()
+  if self.on_change then
+    self.on_change(self.value)
+  end
 end
 
 function TI:_rebuild_cache()
@@ -184,10 +155,7 @@ function TI:set_value(s)
   if self.anchor and self.anchor > #self.value + 1 then
     self.anchor = #self.value + 1
   end
-  self:_invalidate()
-  if self.on_change then
-    self.on_change(self.value)
-  end
+  self:_emit_change()
 end
 
 function TI:focus()
@@ -292,10 +260,7 @@ function TI:_delete_selection()
   self.value = splice(self.value, a, b)
   self.cursor = a
   self.anchor = nil
-  self:_invalidate()
-  if self.on_change then
-    self.on_change(self.value)
-  end
+  self:_emit_change()
   return true
 end
 
@@ -335,10 +300,7 @@ function TI:_insert(text)
   local i = self.cursor
   self.value = splice(self.value, i, i, text)
   self.cursor = i + #text
-  self:_invalidate()
-  if self.on_change then
-    self.on_change(self.value)
-  end
+  self:_emit_change()
 end
 
 function TI:select_all()
@@ -354,10 +316,7 @@ function TI:clear()
   self.cursor = 1
   self.anchor = nil
   self.scroll_x = 0
-  self:_invalidate()
-  if self.on_change then
-    self.on_change(self.value)
-  end
+  self:_emit_change()
 end
 
 function TI:copy()
@@ -434,10 +393,7 @@ function TI:on_key(sym, ctrl, shift, text)
         if a < self.cursor then
           self.value = splice(self.value, a, self.cursor)
           self.cursor = a
-          self:_invalidate()
-          if self.on_change then
-            self.on_change(self.value)
-          end
+          self:_emit_change()
         end
       end
       return true
@@ -498,10 +454,7 @@ function TI:on_key(sym, ctrl, shift, text)
       if a < self.cursor then
         self.value = splice(self.value, a, self.cursor)
         self.cursor = a
-        self:_invalidate()
-        if self.on_change then
-          self.on_change(self.value)
-        end
+        self:_emit_change()
       end
     end
     return true
@@ -512,10 +465,7 @@ function TI:on_key(sym, ctrl, shift, text)
       local b = ctrl and next_word(self.value, self.cursor) or utf8_next(self.value, self.cursor)
       if b > self.cursor then
         self.value = splice(self.value, self.cursor, b)
-        self:_invalidate()
-        if self.on_change then
-          self.on_change(self.value)
-        end
+        self:_emit_change()
       end
     end
     return true
@@ -568,6 +518,15 @@ function TI:on_mouse_press(mx, my, shift_held)
   if not self:contains(mx, my) then
     return false
   end
+
+  -- 尾部清空按钮命中
+  if self.clear_btn and #self.value > 0 and mx >= self.x + self.w - 24 then
+    self:clear()
+    self.blink_on = true
+    self.blink_t = 0
+    return true
+  end
+
   self:_update_click_count(mx, my)
 
   local pos = self:_pos_of(mx)
@@ -629,22 +588,28 @@ function TI:draw(s, theme)
     self:_rebuild_cache()
   end
 
-  -- 背景
+  local text_y = self.y + math.floor((self.h - lh) / 2)
   local bg = self.focused and (theme.bg_focus or theme.surface_hi) or (theme.bg or theme.surface)
   local r = theme.radius or math.floor(self.h / 2)
-  s:rrect(self.x, self.y, self.w, self.h, r, bg)
 
-  if self.focused then
-    local outline = theme.outline_focus or theme.primary
-    local ix = self.x + r
-    local iw = self.w - 2 * r
-    if iw > 0 then
-      s:rect(ix, self.y, iw, 1, outline)
-      s:rect(ix, self.y + self.h - 1, iw, 1, outline)
-    end
+  -- MD3 search bar：全圆角容器，聚焦时 1px 描边环
+  if self.focused and theme.outline_focus then
+    s:rrect(self.x, self.y, self.w, self.h, r, theme.outline_focus)
+    s:rrect(self.x + 1, self.y + 1, self.w - 2, self.h - 2, math.max(r - 1, 2), bg)
+  else
+    s:rrect(self.x, self.y, self.w, self.h, r, bg)
   end
 
-  local text_y = self.y + math.floor((self.h - lh) / 2)
+  -- 前导放大镜
+  if self.icon then
+    local icol = theme.icon or theme.text_dim or theme.outline
+    local ix = self.x + 10
+    local iy = self.y + math.floor((self.h - 12) / 2)
+    s:rrect(ix, iy, 9, 9, 4, icol)
+    s:rrect(ix + 1, iy + 1, 7, 7, 3, bg)
+    s:rect(ix + 7, iy + 7, 2, 2, icol)
+    s:rect(ix + 9, iy + 9, 2, 2, icol)
+  end
 
   -- 选择背景
   local a, b = self:sel_range()
@@ -686,6 +651,17 @@ function TI:draw(s, theme)
     end
     if #visible > 0 then
       s:text(draw_x, text_y, visible, theme.text or theme.on_surface)
+    end
+  end
+
+  -- 尾部清空按钮（手绘 ×，避免 ✕ 回退到 emoji 字体导致尺寸异常）
+  if self.clear_btn and #self.value > 0 then
+    local xcol = theme.text_dim or theme.outline
+    local bx = self.x + self.w - 16
+    local by = self.y + math.floor((self.h - 7) / 2)
+    for i = 0, 5 do
+      s:rect(bx + i, by + i, 2, 2, xcol)
+      s:rect(bx + 6 - i, by + i, 2, 2, xcol)
     end
   end
 

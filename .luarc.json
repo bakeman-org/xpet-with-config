@@ -5,7 +5,9 @@
     },
     "diagnostics": {
         "globals": [],
-        "disable": []
+        "disable": [
+            "undefined-field"
+        ]
     },
     "workspace": {
         "checkThirdParty": false,

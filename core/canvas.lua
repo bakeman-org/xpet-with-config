@@ -1,5 +1,6 @@
 local M = {}
 local ffi = require('ffi')
+local X11C = require('core.x11_const')
 
 function M.new(ctx, w, h, opts)
   opts = opts or {}
@@ -21,12 +22,24 @@ function M.new(ctx, w, h, opts)
   attrs.background_pixel = bg
   attrs.border_pixel = border
 
-  local mask = 0x0200 + 0x0002 + 0x0008
+  local mask = X11C.CW_OVERRIDE_REDIRECT + X11C.CW_BACK_PIXEL + X11C.CW_BORDER_PIXEL
 
-  local win =
-    X11.XCreateWindow(dpy, ctx.root, init_x, init_y, w, h, border_w, ctx.depth, 1, nil, mask, attrs)
+  local win = X11.XCreateWindow(
+    dpy,
+    ctx.root,
+    init_x,
+    init_y,
+    w,
+    h,
+    border_w,
+    ctx.depth,
+    1,
+    nil,
+    mask,
+    attrs
+  )
 
-  X11.XSelectInput(dpy, win, 0x00008000 + 0x00000004 + 0x00000008 + 0x00000040)
+  X11.XSelectInput(dpy, win, X11C.INPUT_MASK_BASE)
 
   local pixmap = X11.XCreatePixmap(dpy, win, w, h, ctx.depth)
   local pgc = X11.XCreateGC(dpy, pixmap, 0, nil)
@@ -110,9 +123,9 @@ function M.new(ctx, w, h, opts)
   end
 
   function canvas.enable_keyboard(enable)
-    local base = 0x00008000 + 0x00000004 + 0x00000008 + 0x00000040
+    local base = X11C.INPUT_MASK_BASE
     if enable then
-      base = base + 0x00000001 + 0x00000002 -- KeyPressMask | KeyReleaseMask
+      base = base + X11C.KEY_PRESS_MASK + X11C.KEY_RELEASE_MASK
     end
     X11.XSelectInput(dpy, win, base)
   end

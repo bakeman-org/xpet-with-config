@@ -1,9 +1,7 @@
 local M = {}
-local UI = require("core.ui")
-local Surface = require("core.surface")
-local Clipboard = require("core.clipboard")
-local TextInput = require("core.text_input")
-local ffi = require("ffi")
+local X11C = require("core.x11_const")
+local Panel = require("core.panel")
+local Keybinds = require("core.keybinds")
 
 local REFRESH_MS   = 1000
 local HISTORY_LEN  = 60
@@ -12,24 +10,12 @@ local CLK_TCK      = 100
 local PAGE_SIZE    = 4096
 local PROC_FETCH_N = 200
 
-local CTRL_MASK     = 0x4
-local SHIFT_MASK    = 0x1
-local LOCK_VARIANTS = { 0, 0x2, 0x10, 0x12 }
-local XK_BackSpace  = 0xff08
-local XK_Return     = 0xff0d
-local XK_Escape     = 0xff1b
-local XK_Up         = 0xff52
-local XK_Down       = 0xff54
-local XK_Page_Up    = 0xff55
-local XK_Page_Down  = 0xff56
-local XK_Home       = 0xff50
-local XK_End        = 0xff57
-local XK_k          = 0x6b
+local XK_k = 0x6b
 
 local THEME = {
     bg = 0x141218, surface = 0x1d1b20, surface_hi = 0x2b2930,
     primary = 0xb69eff, primary_hi = 0xcfbcff, on_surface = 0xe6e1e5,
-    on_var = 0xcac4d0, outline = 0x49454f,
+    on_var = 0xcac4d0, outline = 0x49454f, secondary_ctr = 0x4a4458,
     green = 0xa6e3a1, yellow = 0xf9e2af, red = 0xf38ba8,
     track = 0x1e1e2e, select = 0x3b383e, search_bg = 0x2b2930,
 }
@@ -213,56 +199,9 @@ local function compute_layout(lh, ncores_display, scr_h)
     return L
 end
 
-function M:_grab_ctrl_f()
-    if M._grabbed then return end
-    local X = M.ctx.X11
-    local dpy = M.ctx.dpy
-    if not M._code_f or M._code_f == 0 then return end
-    for _, extra in ipairs(LOCK_VARIANTS) do
-        X.XGrabKey(dpy, M._code_f, M.ctx.bit.bor(CTRL_MASK, extra),
-                   M.ctx.root, 0, 1, 1)
-    end
-    X.XFlush(dpy)
-    M._grabbed = true
-end
-
-function M:_ungrab_ctrl_f()
-    if not M._grabbed then return end
-    local X = M.ctx.X11
-    local dpy = M.ctx.dpy
-    if not M._code_f or M._code_f == 0 then return end
-    for _, extra in ipairs(LOCK_VARIANTS) do
-        X.XUngrabKey(dpy, M._code_f, M.ctx.bit.bor(CTRL_MASK, extra),
-                     M.ctx.root)
-    end
-    X.XFlush(dpy)
-    M._grabbed = false
-end
-
-function M:_focus_keyboard()
-    if M._kbd_grabbed then return end
-    local X, dpy = M.ctx.X11, M.ctx.dpy
-    M.canvas:enable_keyboard(true)
-    X.XGrabKeyboard(dpy, M.canvas.win, 0, 1, 1, 0)
-    if M._ic then X.XSetICFocus(M._ic) end
-    X.XFlush(dpy)
-    M._kbd_grabbed = true
-end
-
-function M:_unfocus_keyboard()
-    if not M._kbd_grabbed then return end
-    local X, dpy = M.ctx.X11, M.ctx.dpy
-    if M._ic then X.XUnsetICFocus(M._ic) end
-    X.XUngrabKeyboard(dpy, 0)
-    M.canvas:enable_keyboard(false)
-    X.XFlush(dpy)
-    M._kbd_grabbed = false
-end
-
 function M.init(ctx)
     M.ctx = ctx
     M.ready = true
-    M.visible = false
 
     local lh = ctx.get_primary_line_height()
     M.LH = lh
@@ -274,9 +213,7 @@ function M.init(ctx)
     local L = compute_layout(lh, M.ncores_display, ctx.scr_h)
     for k, v in pairs(L) do M[k] = v end
 
-    M.X = math.floor((ctx.scr_w - M.W) / 2)
     M.Y_SHOWN = math.max(10, math.floor((ctx.scr_h - M.H) / 2))
-    M.Y_HIDDEN = -(M.H + 4)
 
     M.prev_cpu = nil
     M.prev_procs = {}
@@ -290,49 +227,92 @@ function M.init(ctx)
 
     M.scroll = 0
     M.selected_pid = nil
-    M.search_active = false
     M.search_query = ""
-
-    M.anim_y = M.Y_HIDDEN
-    M.target_y = M.Y_HIDDEN
     M.refresh_acc = 0
 
-    M.rect_search = { x = 0, y = 0, w = 0, h = 0 }
-    M.rect_close  = { x = 0, y = 0, w = 0, h = 0 }
-    M.rect_list   = { x = 0, y = 0, w = 0, h = 0 }
+    M.rect_close = { x = 0, y = 0, w = 0, h = 0 }
+    M.rect_list  = { x = 0, y = 0, w = 0, h = 0 }
 
-    M._code_f = ctx.X11.XKeysymToKeycode(ctx.dpy,
-                ctx.X11.XStringToKeysym("f"))
     M._code_k = ctx.X11.XKeysymToKeycode(ctx.dpy,
                 ctx.X11.XStringToKeysym("k"))
-    M._code_space = ctx.X11.XKeysymToKeycode(ctx.dpy,
-                    ctx.X11.XStringToKeysym("space"))
-    M._grabbed = false
-    M._kbd_grabbed = false
 
-    M.surf = Surface.new(ctx, M.W, M.H)
-    M.ui = UI.new(ctx, THEME)
-    M.ui:attach(M.surf)
-
-    M.canvas = ctx.create_canvas(M.W, M.H, {
-        x = M.X, y = M.Y_HIDDEN,
-        bg = THEME.bg, border = THEME.bg, border_width = 1,
-    })
-
-    M._ic = ctx.xim_create_ic and ctx.xim_create_ic(M.canvas.win) or nil
-
-    M.input = TextInput.new(ctx, {
-        placeholder = "Ctrl+F 搜索进程名或 PID",
-        on_change   = function(v) M.search_query = v; M:apply_filter() end,
-        on_submit   = function()
-            M.search_active = false
-            M.input:blur()
-            M:_unfocus_keyboard()
+    M.panel = Panel.new(ctx, {
+        w = M.W, h = M.H,
+        y_shown = M.Y_SHOWN,
+        theme = THEME,
+        open_key = "f",
+        draw = function(p) M.draw(p) end,
+        input = {
+            placeholder = "Ctrl+F 搜索进程名或 PID",
+            on_change   = function(v) M.search_query = v; M:apply_filter() end,
+            on_submit   = function() M.panel:blur_input() end,
+            on_cancel   = function() M.panel:blur_input() end,
+        },
+        on_show = function(p)
+            if p._code_open and p._code_open ~= 0 then
+                Keybinds.grab_root_key(ctx.X11, ctx.dpy, ctx.root, ctx.bit,
+                                       p._code_open, X11C.CONTROL_MASK)
+            end
+            M:sample()
         end,
-        on_cancel   = function()
-            M.search_active = false
-            M.input:blur()
-            M:_unfocus_keyboard()
+        on_hide = function(p)
+            if p._code_open and p._code_open ~= 0 then
+                Keybinds.ungrab_root_key(ctx.X11, ctx.dpy, ctx.root, ctx.bit,
+                                         p._code_open, X11C.CONTROL_MASK)
+            end
+        end,
+        on_key = function(p, sym, ctrl)
+            if ctrl and sym == XK_k then
+                M:kill_selected()
+                return true
+            end
+            return false
+        end,
+        on_hotkey = function(p, ev, _, ctrl)
+            if ctrl and ev.xkey.keycode == M._code_k then
+                M:kill_selected()
+                return true
+            end
+            return false
+        end,
+        on_wheel = function(p, btn)
+            if btn == 4 then
+                M.scroll = math.max(0, M.scroll - 3)
+            else
+                M.scroll = M.scroll + 3
+                M:clamp_scroll()
+            end
+        end,
+        on_press = function(p, mx, my, btn)
+            local function in_rect(r)
+                return mx >= r.x and mx < r.x + r.w
+                   and my >= r.y and my < r.y + r.h
+            end
+            if in_rect(M.rect_close) then
+                p:hide()
+                return true
+            end
+            if in_rect(M.rect_list) then
+                local row = math.floor((my - M.rect_list.y) / M.ROW_H)
+                local idx = M.scroll + row + 1
+                if idx >= 1 and idx <= #M.filtered then
+                    M.selected_pid = M.filtered[idx].pid
+                    if btn == 3 then M:kill_selected() end
+                end
+                p:draw()
+                return true
+            end
+            return false
+        end,
+        tick = function(p, dt)
+            M.refresh_acc = M.refresh_acc + dt
+            if M.refresh_acc >= REFRESH_MS then
+                M.refresh_acc = 0
+                M:sample()
+                p:draw()
+            elseif p.input.focused then
+                p:draw()
+            end
         end,
     })
 
@@ -349,195 +329,19 @@ function M.init(ctx)
     end
 end
 
-function M:_close()
-    M.visible = false
-    M.target_y = M.Y_HIDDEN
-    M.search_active = false
-    M.input:blur()
-    M:_unfocus_keyboard()
-    M:_ungrab_ctrl_f()
-end
-
 function M.toggle()
     if not M.ready then return end
-    M.visible = not M.visible
-    if M.visible then
-        M:_grab_ctrl_f()
-        M:sample()
-        M.anim_y = M.Y_HIDDEN
-        M.target_y = M.Y_SHOWN
-        M.canvas:move(M.X, math.floor(M.anim_y))
-        M.canvas:show()
-        M.draw()
-    else
-        M:_close()
-    end
-end
-
-local function lookup_input(M, ev)
-    local X = M.ctx.X11
-    local buf = ffi.new("char[256]")
-    local ks  = ffi.new("KeySym[1]")
-    local n, sym, status
-
-    if M._ic then
-        local st = ffi.new("int[1]")
-        n = X.Xutf8LookupString(M._ic, ffi.cast("XKeyEvent*", ev),
-                                buf, 255, ks, st)
-        status = st[0]
-        sym = ks[0]
-    else
-        n = X.XLookupString(ffi.cast("XKeyEvent*", ev),
-                            buf, 255, ks, nil)
-        status = 4
-        sym = ks[0]
-    end
-
-    local text = ""
-    if n > 0 and (status == 2 or status == 4) then
-        text = ffi.string(buf, n)
-    end
-    return text, sym, status
+    M.panel:toggle()
 end
 
 function M.on_ev(t, ev)
-    if not M.ready then return false end
-    if not M.visible then return false end
+    if not M.ready or not M.panel then return false end
+    return M.panel:on_ev(t, ev)
+end
 
-    if t == 2 then
-        -- Ctrl+Space 手动切换 IME
-        if ev.xkey.keycode == M._code_space then
-            local bit = M.ctx.bit
-            if bit.band(ev.xkey.state, CTRL_MASK) ~= 0 then
-                os.execute("fcitx5-remote -t >/dev/null 2>&1 &")
-                return true
-            end
-        end
-
-        if M.search_active then
-            local bit = M.ctx.bit
-            local text, sym, status = lookup_input(M, ev)
-            local ctrl  = bit.band(ev.xkey.state, CTRL_MASK) ~= 0
-            local shift = bit.band(ev.xkey.state, SHIFT_MASK) ~= 0
-
-            if status == 1 then
-                M.draw()
-                return true
-            end
-
-            -- Ctrl+K 是插件保留
-            if ctrl and sym == XK_k then
-                M:kill_selected()
-                M.draw()
-                return true
-            end
-
-            if M.input:on_key(sym, ctrl, shift, text) then
-                M.input:_ensure_cursor_visible()
-                M.draw()
-                return true
-            end
-            M.draw()
-            return true
-        end
-
-        if ev.xkey.keycode == M._code_f then
-            M.search_active = true
-            M:_focus_keyboard()
-            M.input:focus()
-            M.draw()
-            return true
-        end
-
-        if ev.xkey.keycode == M._code_k then
-            local bit = M.ctx.bit
-            if bit.band(ev.xkey.state, CTRL_MASK) ~= 0 then
-                M:kill_selected()
-                return true
-            end
-        end
-
-        return false
-    end
-
-    if t == 12 and ev.xexpose.window == M.canvas.win then
-        M.draw()
-        return true
-    end
-
-    if t == 4 or t == 5 then
-        if ev.xbutton.window ~= M.canvas.win then return false end
-    elseif t == 6 then
-        if ev.xmotion.window ~= M.canvas.win then return false end
-    else
-        return false
-    end
-
-    M.ui:on_event(t, ev)
-
-    if t == 4 then
-        local mx, my = ev.xbutton.x, ev.xbutton.y
-        local btn = ev.xbutton.button
-        local bit = M.ctx.bit
-        local shift_held = bit.band(ev.xbutton.state, SHIFT_MASK) ~= 0
-
-        if btn == 4 then
-            M.scroll = math.max(0, M.scroll - 3)
-            M.draw(); return true
-        elseif btn == 5 then
-            M.scroll = M.scroll + 3
-            M:clamp_scroll(); M.draw(); return true
-        end
-
-        -- 输入框优先
-        if M.input:on_mouse_press(mx, my, shift_held) then
-            if not M.search_active then
-                M.search_active = true
-                M:_focus_keyboard()
-            end
-            M.input:focus()
-            M.draw()
-            return true
-        end
-
-        local function in_rect(r)
-            return mx >= r.x and mx < r.x + r.w
-               and my >= r.y and my < r.y + r.h
-        end
-
-        if in_rect(M.rect_close) then
-            M:_close(); return true
-        end
-
-        if in_rect(M.rect_list) then
-            local row = math.floor((my - M.rect_list.y) / M.ROW_H)
-            local idx = M.scroll + row + 1
-            if idx >= 1 and idx <= #M.filtered then
-                M.selected_pid = M.filtered[idx].pid
-                if btn == 3 then M:kill_selected() end
-            end
-            M.draw(); return true
-        end
-
-        -- 点击别处失焦
-        if M.search_active then
-            M.search_active = false
-            M.input:blur()
-            M:_unfocus_keyboard()
-            M.draw()
-        end
-    elseif t == 5 then
-        M.input:on_mouse_release()
-        return true
-    elseif t == 6 then
-        if M.input:on_mouse_move(ev.xmotion.x, ev.xmotion.y) then
-            M.input:_ensure_cursor_visible()
-            M.draw()
-            return true
-        end
-    end
-
-    return true
+function M.tick(dt)
+    if not M.ready or not M.panel then return end
+    M.panel:tick(dt)
 end
 
 function M:kill_selected()
@@ -551,35 +355,6 @@ function M:kill_selected()
     end
     M.selected_pid = nil
     M:sample()
-end
-
-function M.tick(dt_ms)
-    if not M.ready then return end
-
-    M.input:tick(dt_ms)
-
-    if M.anim_y ~= M.target_y then
-        local d = M.target_y - M.anim_y
-        if math.abs(d) < 1.5 then M.anim_y = M.target_y
-        else M.anim_y = M.anim_y + d * 0.3 end
-        M.canvas:move(M.X, math.floor(M.anim_y))
-        if M.anim_y == M.target_y and M.target_y < 0 then
-            M.canvas:hide()
-            return
-        end
-    end
-
-    if not M.visible then return end
-
-    M.refresh_acc = M.refresh_acc + dt_ms
-    if M.refresh_acc >= REFRESH_MS then
-        M.refresh_acc = 0
-        M:sample()
-        M.draw()
-    elseif M.input.focused then
-        -- 让光标闪烁及时重绘
-        M.draw()
-    end
 end
 
 local function load_color(pct)
@@ -601,17 +376,14 @@ local function fmt_bytes_kb(kb)
     return string.format("%.1f GiB", gib)
 end
 
-function M.draw()
-    if not M.surf then return end
-    local ui, s, T = M.ui, M.surf, M.ui.theme
+function M.draw(p)
+    if not p.surf then return end
+    local s, T = p.surf, p.ui.theme
     local lh, PAD = M.LH, M.PAD
     local inner_w = M.W - PAD * 2
     local LABEL_W, PCT_W = M.LABEL_W, M.PCT_W
     local bar_x = PAD + LABEL_W
     local bar_w = inner_w - LABEL_W - PCT_W - 8
-
-    s:clear(T.bg)
-    ui:begin()
 
     s:rect(0, 0, M.W, M.HEADER_H, T.surface)
     local hy = math.floor((M.HEADER_H - lh) / 2)
@@ -622,19 +394,17 @@ function M.draw()
     local search_w = M.W - search_x - 200
     local search_h = lh + 4
     local search_y = math.floor((M.HEADER_H - search_h) / 2)
-    M.rect_search.x, M.rect_search.y = search_x, search_y
-    M.rect_search.w, M.rect_search.h = search_w, search_h
 
-    M.input:set_rect(search_x, search_y, search_w, search_h)
-    M.input:draw(s, {
+    p.input:set_rect(search_x, search_y, search_w, search_h)
+    p.input:draw(s, {
         bg            = T.search_bg,
         bg_focus      = T.search_bg,
         radius        = math.floor(search_h / 2),
         outline_focus = T.primary,
         text          = T.on_surface,
-        text_dim      = T.outline,
+        text_dim      = T.on_var,
         cursor        = T.primary,
-        sel_bg        = T.primary_hi,
+        sel_bg        = T.secondary_ctr,
     })
 
     local hint = "Ctrl+Alt+T"
@@ -644,7 +414,7 @@ function M.draw()
     local close_x = M.W - PAD - 22
     M.rect_close.x, M.rect_close.y = close_x - 4, hy - 2
     M.rect_close.w, M.rect_close.h = 22, lh + 4
-    s:text(close_x, hy, "✕", T.red)
+    s:text(close_x, hy, "×", T.red)
     s:rect(0, M.HEADER_H - 1, M.W, 1, T.outline)
 
     local y = M.HEADER_H + 12
@@ -736,15 +506,15 @@ function M.draw()
     for i = 0, M.VISIBLE_ROWS - 1 do
         local idx = M.scroll + i + 1
         if idx > #M.filtered then break end
-        local p = M.filtered[idx]
+        local proc = M.filtered[idx]
         local ry = y + i * row_h
-        local selected = (p.pid == M.selected_pid)
+        local selected = (proc.pid == M.selected_pid)
         if selected then
             s:rect(PAD - 4, ry, inner_w + 8, row_h, THEME.select)
         end
-        s:text(pid_x, ry, string.format("%-7d", p.pid),
+        s:text(pid_x, ry, string.format("%-7d", proc.pid),
                selected and T.on_surface or T.on_var)
-        local name = p.name
+        local name = proc.name
         if select(1, M.ctx.get_text_size(name)) > name_max_w then
             local cut = #name
             while cut > 0 do
@@ -757,10 +527,10 @@ function M.draw()
             end
         end
         s:text(name_x, ry, name, T.on_surface)
-        local cpu_col = p.cpu >= 80 and T.red
-                     or p.cpu >= 30 and T.yellow or T.green
-        s:text(cpu_x, ry, string.format("%6.1f", p.cpu), cpu_col)
-        local mp = p.mem / (mem_total * 1024) * 100
+        local cpu_col = proc.cpu >= 80 and T.red
+                     or proc.cpu >= 30 and T.yellow or T.green
+        s:text(cpu_x, ry, string.format("%6.1f", proc.cpu), cpu_col)
+        local mp = proc.mem / (mem_total * 1024) * 100
         s:text(mem_x, ry, string.format("%6.1f%%", mp), T.on_var)
     end
 
@@ -787,21 +557,14 @@ function M.draw()
         or  string.format("%d 进程 · Ctrl+F 搜索 · Ctrl+K 杀进程 · PgUp/PgDn 翻页",
                           total)
     s:text(PAD, by + 4, status, T.outline)
-
-    ui:end_frame()
-    s:flush(M.canvas.win, M.canvas.wgc, 0, 0)
 end
 
 function M.shutdown()
-    M:_unfocus_keyboard()
-    M:_ungrab_ctrl_f()
-    if M._ic and M.ctx and M.ctx.xim_destroy_ic then
-        M.ctx.xim_destroy_ic(M._ic)
-        M._ic = nil
+    if M.panel then
+        if M.panel.visible then M.panel:hide() end
+        M.panel:destroy()
     end
     M.ready = false
-    if M.surf then M.surf:destroy() end
-    if M.canvas then M.canvas:destroy() end
 end
 
 return M

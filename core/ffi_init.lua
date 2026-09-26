@@ -1,5 +1,6 @@
 return function(SCRIPT_DIR)
   local ffi = require('ffi')
+
   local bit = require('bit')
 
   ffi.cdef([[
@@ -227,6 +228,12 @@ int XLookupString(XKeyEvent *event_struct, char *buffer_return,
 int XGrabKeyboard(Display *display, Window grab_window, Bool owner_events,
                   int pointer_mode, int keyboard_mode, unsigned long time);
 int XUngrabKeyboard(Display *display, unsigned long time);
+int XGrabPointer(Display *display, Window grab_window, Bool owner_events,
+                 unsigned int event_mask, int pointer_mode, int keyboard_mode,
+                 Window confine_to, unsigned long cursor, unsigned long time);
+int XUngrabPointer(Display *display, unsigned long time);
+unsigned long XCreateFontCursor(Display *display, unsigned int shape);
+int XFreeCursor(Display *display, unsigned long cursor);
 int XSetInputFocus(Display *display, Window focus, int revert_to,
                    unsigned long time);
 Window XGetInputFocus(Display *display, Window *focus_return,

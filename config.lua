@@ -1,8 +1,10 @@
 return {
+  -- scale sugeested value range of 1-12, don't make it very big, or try it yourself
   scale_factor = 2,
   pet_speed = 2,
   frame_duration = 200,
 
+  pet_source = 'xpm',
   pet_asset_dir = 'assets/pets/bsd',
   audio_panel_dir = 'assets/music',
 
@@ -90,6 +92,26 @@ return {
       key = 't',
       action = 'toggle_sysmon',
     },
+    {
+      mod = 'ctrl+alt',
+      key = 'b',
+      action = 'toggle_pomodoro',
+    },
+    {
+      mod = 'ctrl+alt',
+      key = 'v',
+      action = 'toggle_clip_hist',
+    },
+    {
+      mod = 'ctrl+alt',
+      key = 'e',
+      action = 'toggle_launcher',
+    },
+    {
+      mod = 'ctrl+alt',
+      key = 'c',
+      action = 'toggle_color_picker',
+    },
   },
   plugins = {
     'keybinds_help',
@@ -97,6 +119,29 @@ return {
     'weather',
     'sysinfo',
     'sysmon',
+    'pomodoro',
+    'clip_hist',
+    'launcher',
+    'color_picker',
+  },
+
+  pomodoro = {
+    work_min = 25,
+    break_min = 5,
+  },
+
+  clip_hist = {
+    max_items = 30,
+  },
+
+  launcher = {
+    entries = {
+      { name = '终端', cmd = 'alacritty' },
+      { name = '文件管理器', cmd = 'pcmanfm' },
+      { name = '浏览器', cmd = 'firefox' },
+      { name = '编辑器', cmd = 'code' },
+      { name = '系统监视', cmd = 'alacritty -e btop' },
+    },
   },
 
   weather = {

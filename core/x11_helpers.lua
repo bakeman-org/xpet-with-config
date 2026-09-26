@@ -29,6 +29,7 @@ function M.open(ffi_init)
     return 0
   end)
   X11.XSetErrorHandler(err_handler)
+  M.err_handler = err_handler -- 引用保活，防止 FFI 回调被 GC 成野指针
   return {
     dpy = dpy,
     screen = screen,

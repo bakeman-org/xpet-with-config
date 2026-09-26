@@ -10,6 +10,9 @@ local x11_helpers = require('core.x11_helpers')
 local canvas_mod = require('core.canvas')
 local pet_mod = require('core.pet')
 local plugin_mgr = require('core.plugin_mgr')
+local config_mod = require('core.config')
+local keybinds_mod = require('core.keybinds')
+local Util = require('core.util')
 
 local ffi = ffi_init.ffi
 local bit = ffi_init.bit
@@ -18,65 +21,16 @@ local FT = ffi_init.FT
 local AUD = ffi_init.AUD
 local libc = ffi_init.libc
 
-local function log(fmt, ...)
-  io.stderr:write('[xpet] ' .. string.format(fmt, ...) .. '\n')
-end
+local log = Util.logger('xpet')
 
-local function expand_tilde(p)
-  if p and p:sub(1, 1) == '~' then
-    return (os.getenv('HOME') or '') .. p:sub(2)
-  end
-  return p
-end
-
-local function resolve_path(p)
-  p = expand_tilde(p or '')
-  if p == '' then
-    return p
-  end
-  if p:sub(1, 1) == '/' then
-    return p
-  end
-  return SCRIPT_DIR .. '/' .. p
-end
-
-local function file_exists(p)
-  local f = io.open(p, 'rb')
-  if f then
-    f:close()
-    return true
-  end
-  return false
-end
-
-local CONFIG_PATH = (arg[1] and arg[1] ~= '') and resolve_path(arg[1])
+local CONFIG_PATH = (arg[1] and arg[1] ~= '') and config_mod.resolve_path(arg[1], SCRIPT_DIR)
   or (SCRIPT_DIR .. '/config.lua')
-if not file_exists(CONFIG_PATH) then
+if not config_mod.file_exists(CONFIG_PATH) then
   error('config not found: ' .. CONFIG_PATH)
 end
 
-local function load_config()
-  local chunk, err = loadfile(CONFIG_PATH)
-  if not chunk then
-    error('load config: ' .. tostring(err))
-  end
-  local ok, cfg = pcall(chunk)
-  if not ok then
-    error('run config: ' .. tostring(cfg))
-  end
-  if type(cfg) ~= 'table' then
-    error('config must return a table')
-  end
-
-  cfg.pet_asset_dir = resolve_path(cfg.pet_asset_dir)
-  cfg.audio_panel_dir = resolve_path(cfg.audio_panel_dir)
-  cfg.font_path = resolve_path(cfg.font_path)
-  cfg.click_audio_to_play = cfg.click_audio_to_play and resolve_path(cfg.click_audio_to_play) or nil
-  cfg.fallback_font_paths = cfg.fallback_font_paths or {}
-  for i, p in ipairs(cfg.fallback_font_paths) do
-    cfg.fallback_font_paths[i] = resolve_path(p)
-  end
-  return cfg
+local load_config = function()
+  return config_mod.load(CONFIG_PATH, SCRIPT_DIR)
 end
 
 local config = load_config()
@@ -267,95 +221,14 @@ end
 
 plugin_mgr.load_all(config.plugins or {}, ctx)
 
-local AnyModifier = 0x8000
-
-local MASK_NAMES = {
-  shift = 0x1,
-  lock = 0x2,
-  caps = 0x2,
-  ctrl = 0x4,
-  control = 0x4,
-  alt = 0x8,
-  mod1 = 0x8,
-  mod2 = 0x10,
-  num = 0x10,
-  mod3 = 0x20,
-  super = 0x40,
-  mod4 = 0x40,
-  win = 0x40,
-  cmd = 0x40,
-  meta = 0x40,
-  mod5 = 0x80,
-  shiftmask = 0x1,
-  lockmask = 0x2,
-  controlmask = 0x4,
-  mod1mask = 0x8,
-  mod2mask = 0x10,
-  mod3mask = 0x20,
-  mod4mask = 0x40,
-  mod5mask = 0x80,
-}
-
-local function parse_mods(s)
-  if type(s) ~= 'string' then
-    return nil
-  end
-  local mask = 0
-  for part in s:gmatch('[^+]+') do
-    part = part:match('^%s*(.-)%s*$'):lower()
-    local m = MASK_NAMES[part]
-    if not m then
-      return nil
-    end
-    mask = bit.bor(mask, m)
-  end
-  return mask == 0 and nil or mask
-end
-
-local KEYCODE_TO_BINDING = {}
-local LOCK_BITS = bit.bor(0x2, 0x10)
-local lock_variants = { 0, 0x2, 0x10, LOCK_BITS }
-
-local function rebuild_keybinds()
-  for k in pairs(KEYCODE_TO_BINDING) do
-    KEYCODE_TO_BINDING[k] = nil
-  end
-  X11.XUngrabKey(d.dpy, 0, AnyModifier, d.root)
-
-  for _, kb in ipairs(config.keybinds or {}) do
-    local mask = parse_mods(kb.mod)
-    if not mask then
-      log('unknown modifier: %s', tostring(kb.mod))
-    else
-      local sym = X11.XStringToKeysym(kb.key)
-      local code = X11.XKeysymToKeycode(d.dpy, sym)
-      if code == 0 then
-        log('unknown key: %s', tostring(kb.key))
-      else
-        KEYCODE_TO_BINDING[code] = { mask = mask, action = kb.action }
-        for _, extra in ipairs(lock_variants) do
-          X11.XGrabKey(d.dpy, code, bit.bor(mask, extra), d.root, 0, 1, 1)
-        end
-      end
-    end
-  end
-  X11.XFlush(d.dpy)
-  X11.XSync(d.dpy, 0)
-end
-
-local function lookup_binding(keycode, state)
-  local entry = KEYCODE_TO_BINDING[keycode]
-  if not entry then
-    return nil
-  end
-  local clean = bit.band(state, bit.bnot(LOCK_BITS))
-  if clean == entry.mask then
-    return entry.action
-  end
-  return nil
-end
-
-rebuild_keybinds()
+local keybinds = keybinds_mod.new({
+  X11 = X11,
+  bit = bit,
+  dpy = d.dpy,
+  root = d.root,
+  log = log,
+})
+keybinds.rebuild(config)
 
 local function do_hot_reload(silent)
   local ok, newcfg = pcall(load_config)
@@ -399,8 +272,8 @@ local function do_hot_reload(silent)
     log('pet reloaded (scale=%s)', tostring(config.scale_factor))
   end
 
-  plugin_mgr.reload(ctx)
-  rebuild_keybinds()
+  plugin_mgr.reload(ctx, config.plugins or {})
+  keybinds.rebuild(config)
 
   if not silent then
     ctx.show_bubble('hot reload done 🚀')
@@ -433,6 +306,7 @@ log('xpet running')
 while true do
   while X11.XPending(d.dpy) > 0 do
     X11.XNextEvent(d.dpy, ev)
+
     local t = ev.type
 
     -- IME 优先过滤：如果当前有 IC 处于 focus 且正在合成，
@@ -442,7 +316,7 @@ while true do
 
       if not consumed then
         if t == 2 then
-          local action = lookup_binding(ev.xkey.keycode, ev.xkey.state)
+          local action = keybinds.lookup(ev.xkey.keycode, ev.xkey.state)
           if action and actions[action] then
             local ok, err = pcall(actions[action])
             if not ok then

@@ -1,4 +1,5 @@
 local M = {}
+local Util = require('core.util')
 
 local Toast = {}
 Toast.__index = Toast
@@ -31,46 +32,8 @@ local function resolve_style(s)
   return STYLES[s or 'info'] or STYLES.info
 end
 
-local function utf8_step(s, i)
-  local b = s:byte(i)
-  if not b then
-    return 1
-  end
-  if b < 0x80 then
-    return 1
-  end
-  if b < 0xE0 then
-    return 2
-  end
-  if b < 0xF0 then
-    return 3
-  end
-  return 4
-end
-
-local function utf8_truncate(s, max_chars)
-  local i = 1
-  local L = #s
-  local n = 0
-  while i <= L do
-    if n >= max_chars then
-      -- 需要截断
-      local cut = i
-      while cut > 1 do
-        local b = s:byte(cut)
-        if b and b >= 0x80 and b < 0xC0 then
-          cut = cut - 1
-        else
-          break
-        end
-      end
-      return s:sub(1, cut - 1) .. '…'
-    end
-    i = i + utf8_step(s, i)
-    n = n + 1
-  end
-  return s
-end
+local utf8_step = Util.utf8_step
+local utf8_truncate = Util.utf8_truncate
 
 local function wrap_text(ctx, text, max_w, max_lines)
   -- 先测整段宽度；不够则逐字符换行

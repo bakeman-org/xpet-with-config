@@ -1,45 +1,19 @@
 local M = {}
 local ffi = require('ffi')
-local bit = require('bit')
 local Toast = require('core.toast')
-
-local STATE_NAMES = {
-  'idle',
-  'sleeping',
-  'dragged',
-  'happy',
-  'walk_north',
-  'walk_south',
-  'walk_east',
-  'walk_west',
-  'walk_northwest',
-  'walk_northeast',
-  'walk_southwest',
-  'walk_southeast',
-}
-
-local function file_exists(p)
-  local f = io.open(p, 'rb')
-  if f then
-    f:close()
-    return true
-  end
-  return false
-end
+local X11C = require('core.x11_const')
+local PetSource = require('core.pet_source')
+local Behavior = require('core.behavior')
 
 function M.new(ctx)
   local X11 = ctx.X11
   local Xext = ctx.Xext
-  local Xpm = ctx.Xpm
-  local FT = ctx.FT
   local dpy = ctx.dpy
   local root = ctx.root
   local depth = ctx.depth
   local scr_w = ctx.scr_w
   local scr_h = ctx.scr_h
   local config = ctx.config
-  local black = ctx.black
-  local white = ctx.white
   local log = ctx.log
 
   local pet = {
@@ -52,125 +26,29 @@ function M.new(ctx)
     y = math.floor(scr_h / 2),
     w = 64,
     h = 64,
-    chasing = false,
-    frozen = false,
-    dragging = false,
-    drag_off_x = 0,
-    drag_off_y = 0,
-    target_x = 0,
-    target_y = 0,
-    wander_wait = 0,
     animations = {},
   }
 
   -- Toast 实例（用于替代旧的白色气泡窗口）
   pet.toast = Toast.new(ctx)
 
-  local function scale_pixmap(src, sw, sh, scale)
-    if scale <= 1 then
-      return src
-    end
-    local dw, dh = sw * scale, sh * scale
-    local dest = X11.XCreatePixmap(dpy, root, dw, dh, depth)
-    local gc = X11.XCreateGC(dpy, dest, 0, nil)
-    local img = X11.XGetImage(dpy, src, 0, 0, sw, sh, 0xFFFFFFFF, 2)
-    if img ~= nil then
-      for yy = 0, sh - 1 do
-        for xx = 0, sw - 1 do
-          local pixel = X11.XGetPixel(img, xx, yy)
-          X11.XSetForeground(dpy, gc, pixel)
-          X11.XFillRectangle(dpy, dest, gc, xx * scale, yy * scale, scale, scale)
+  local function free_animations()
+    local seen = {}
+    for _, frames in pairs(pet.animations) do
+      if not seen[frames] then
+        seen[frames] = true
+        for _, fr in ipairs(frames) do
+          X11.XFreePixmap(dpy, fr.pix)
+          X11.XFreePixmap(dpy, fr.mask)
         end
       end
-      X11.XDestroyImage(img)
     end
-    X11.XFreeGC(dpy, gc)
-    return dest
+    pet.animations = {}
   end
 
-  local function scale_mask(src, sw, sh, scale)
-    if scale <= 1 then
-      return src
-    end
-    local dw, dh = sw * scale, sh * scale
-    local dest = X11.XCreatePixmap(dpy, root, dw, dh, 1)
-    local gc = X11.XCreateGC(dpy, dest, 0, nil)
-    local img = X11.XGetImage(dpy, src, 0, 0, sw, sh, 0xFFFFFFFF, 2)
-    if img ~= nil then
-      for yy = 0, sh - 1 do
-        for xx = 0, sw - 1 do
-          local pixel = bit.band(X11.XGetPixel(img, xx, yy), 1)
-          X11.XSetForeground(dpy, gc, pixel)
-          X11.XFillRectangle(dpy, dest, gc, xx * scale, yy * scale, scale, scale)
-        end
-      end
-      X11.XDestroyImage(img)
-    end
-    X11.XFreeGC(dpy, gc)
-    return dest
-  end
-
-  local function load_frames(dir, scale)
-    scale = scale or 1
-    local frames = {}
-    local i = 0
-    while true do
-      local path = string.format('%s/%d.xpm', dir, i)
-      if not file_exists(path) then
-        break
-      end
-      local pix_out = ffi.new('Pixmap[1]')
-      local mask_out = ffi.new('Pixmap[1]')
-      local rc = Xpm.XpmReadFileToPixmap(dpy, root, path, pix_out, mask_out, nil)
-      if rc ~= 0 then
-        log('XPM read failed: %s (rc=%d)', path, rc)
-        break
-      end
-      local src_pix = pix_out[0]
-      local src_mask = mask_out[0]
-      local root_ret = ffi.new('Window[1]')
-      local xi, yi = ffi.new('int[1]'), ffi.new('int[1]')
-      local ww, hh = ffi.new('unsigned int[1]'), ffi.new('unsigned int[1]')
-      local bw_, dd_ = ffi.new('unsigned int[1]'), ffi.new('unsigned int[1]')
-      X11.XGetGeometry(dpy, src_pix, root_ret, xi, yi, ww, hh, bw_, dd_)
-      local sw, sh = ww[0], hh[0]
-      if scale > 1 then
-        local sp = scale_pixmap(src_pix, sw, sh, scale)
-        local sm = scale_mask(src_mask, sw, sh, scale)
-        X11.XFreePixmap(dpy, src_pix)
-        X11.XFreePixmap(dpy, src_mask)
-        frames[#frames + 1] = {
-          pix = sp,
-          mask = sm,
-          w = sw * scale,
-          h = sh * scale,
-        }
-      else
-        frames[#frames + 1] = {
-          pix = src_pix,
-          mask = src_mask,
-          w = sw,
-          h = sh,
-        }
-      end
-      i = i + 1
-    end
-    return frames
-  end
-
+  -- 素材由 PetSource 后端加载（XPM / 未来 PNG、GIF）
   function pet:load_animations()
-    for _, name in ipairs(STATE_NAMES) do
-      local dir = string.format('%s/%s', config.pet_asset_dir, name)
-      local frames = load_frames(dir, config.scale_factor or 1)
-      if #frames == 0 then
-        if pet.animations.idle then
-          frames = pet.animations.idle
-        else
-          log("warning: no frames for state '%s'", name)
-        end
-      end
-      pet.animations[name] = frames
-    end
+    pet.animations = PetSource.load(ctx, config)
     log('animations: idle=%d frames', #(pet.animations.idle or {}))
   end
 
@@ -189,19 +67,26 @@ function M.new(ctx)
       error('no frames available')
     end
     pet.w, pet.h = f.w, f.h
-    ---@class MyX11Attrs2 : ffi.cdata*
-    ---@field override_redirect integer
-    ---@field background_pixel integer
-    ---@field border_pixel integer
     local attrs = ffi.new('XSetWindowAttributes')
-    -- local attrs = ffi.new('XSetWindowAttributes')
     attrs.override_redirect = 1
     attrs.background_pixmap = f.pix
     attrs.border_pixel = 0
-    local mask = 0x0200 + 0x0001 + 0x0008
-    pet.win =
-      X11.XCreateWindow(dpy, root, pet.x, pet.y, pet.w, pet.h, 0, depth, 1, nil, mask, attrs)
-    X11.XSelectInput(dpy, pet.win, 0x00008000 + 0x00000004 + 0x00000008 + 0x00000040)
+    local mask = X11C.CW_OVERRIDE_REDIRECT + X11C.CW_BACK_PIXMAP + X11C.CW_BORDER_PIXEL
+    pet.win = X11.XCreateWindow(
+      dpy,
+      root,
+      pet.x,
+      pet.y,
+      pet.w,
+      pet.h,
+      0,
+      depth,
+      1,
+      nil,
+      mask,
+      attrs
+    )
+    X11.XSelectInput(dpy, pet.win, X11C.INPUT_MASK_BASE)
     Xext.XShapeCombineMask(dpy, pet.win, 0, 0, 0, f.mask, 0)
     X11.XSetWindowBackgroundPixmap(dpy, pet.win, f.pix)
     X11.XMapWindow(dpy, pet.win)
@@ -229,29 +114,9 @@ function M.new(ctx)
     end
   end
 
-  function pet:tick(dt_ms)
-    local fs = pet:current_frames()
-    if #fs == 0 then
-      return
-    end
-    pet.frame_time = pet.frame_time + dt_ms
-    if pet.frame_time >= (config.frame_duration or 200) then
-      pet.frame_time = 0
-      pet.frame = pet.frame % #fs + 1
-      pet:apply_frame()
-    end
-
-    -- 气泡由 toast 统一驱动
-    pet.toast:tick(dt_ms)
-
-    if not pet.dragging and not pet.frozen then
-      if pet.chasing then
-        local mx, my = pet:query_mouse()
-        pet:move_towards(mx, my)
-      else
-        pet:wander(dt_ms)
-      end
-    end
+  function pet:move_to(x, y)
+    pet.x, pet.y = x, y
+    X11.XMoveWindow(dpy, pet.win, math.floor(x), math.floor(y))
   end
 
   function pet:query_mouse()
@@ -266,51 +131,41 @@ function M.new(ctx)
     return rx[0], ry[0]
   end
 
-  function pet:direction_from_delta(dx, dy)
-    local ax, ay = math.abs(dx), math.abs(dy)
-    if ax > ay * 2 then
-      return dx > 0 and 'walk_east' or 'walk_west'
-    end
-    if ay > ax * 2 then
-      return dy > 0 and 'walk_south' or 'walk_north'
-    end
-    if dx > 0 then
-      return dy < 0 and 'walk_northeast' or 'walk_southeast'
-    else
-      return dy < 0 and 'walk_northwest' or 'walk_southwest'
-    end
-  end
+  -- 行为（漫游/追踪/冻结/拖拽）由表驱动状态机接管
+  pet.behavior = Behavior.new(pet, {
+    speed = config.pet_speed or 2,
+    margin = 100,
+    screen_w = scr_w,
+    screen_h = scr_h,
+    idle_anim = 'idle',
+    wait_min = 16000,
+    wait_max = 32000,
+    query_mouse = function()
+      return pet:query_mouse()
+    end,
+  })
 
-  function pet:move_towards(tx, ty)
-    local dx, dy = tx - pet.x, ty - pet.y
-    local dist2 = dx * dx + dy * dy
-    if dist2 < 4 then
-      pet:set_state('idle')
-      return true
+  function pet:tick(dt_ms)
+    local fs = pet:current_frames()
+    if #fs > 0 then
+      pet.frame_time = pet.frame_time + dt_ms
+      if pet.frame_time >= (config.frame_duration or 200) then
+        pet.frame_time = 0
+        pet.frame = pet.frame % #fs + 1
+        pet:apply_frame()
+      end
     end
-    local spd = config.pet_speed or 2
-    pet:set_state(pet:direction_from_delta(dx, dy))
-    if dist2 <= spd * spd then
-      pet.x, pet.y = tx, ty
-    else
-      local len = math.sqrt(dist2)
-      pet.x = pet.x + dx / len * spd
-      pet.y = pet.y + dy / len * spd
-    end
-    X11.XMoveWindow(dpy, pet.win, math.floor(pet.x), math.floor(pet.y))
-    return false
+
+    -- 气泡由 toast 统一驱动
+    pet.toast:tick(dt_ms)
+
+    pet.behavior:tick(dt_ms)
   end
 
   function pet:reload_animations(new_config)
     config = new_config
 
-    for _, frames in pairs(pet.animations) do
-      for _, fr in ipairs(frames) do
-        X11.XFreePixmap(dpy, fr.pix)
-        X11.XFreePixmap(dpy, fr.mask)
-      end
-    end
-    pet.animations = {}
+    free_animations()
 
     if pet.win then
       X11.XDestroyWindow(dpy, pet.win)
@@ -326,55 +181,31 @@ function M.new(ctx)
     pet.state = 'idle'
     pet.frame = 1
     pet.frame_time = 0
+    pet.behavior.o.speed = config.pet_speed or 2
     pet:create_window()
-    pet:pick_destination()
+    pet.behavior:reset()
   end
 
   function pet:set_config(new_config)
     config = new_config
   end
 
-  function pet:pick_destination()
-    local M_ = 100
-    local max_x = math.max(M_, scr_w - M_ - pet.w)
-    local max_y = math.max(M_, scr_h - M_ - pet.h)
-    pet.target_x = M_ + math.random(0, max_x - M_)
-    pet.target_y = M_ + math.random(0, max_y - M_)
-    pet.wander_wait = 0
-  end
-
-  function pet:wander(dt_ms)
-    local WMIN, WMAX = 16000, 32000
-    local dx, dy = pet.target_x - pet.x, pet.target_y - pet.y
-    if dx * dx + dy * dy < 4 then
-      if pet.wander_wait <= 0 then
-        pet.wander_wait = WMIN + math.random(0, WMAX - WMIN)
-        pet:set_state('idle')
-      else
-        pet.wander_wait = pet.wander_wait - dt_ms
-        if pet.wander_wait <= 0 then
-          pet:pick_destination()
-        end
-      end
-      return
-    end
-    pet:move_towards(pet.target_x, pet.target_y)
-  end
-
   function pet:toggle_chase()
-    pet.chasing = not pet.chasing
-    if pet.chasing then
-      pet.frozen = false
-      pet:set_state('walk_east')
+    local b = pet.behavior
+    if b.mode == 'chase' then
+      b:set_mode('wander')
     else
-      pet:pick_destination()
+      b:set_mode('chase')
     end
   end
 
   function pet:toggle_freeze()
-    pet.frozen = not pet.frozen
-    if pet.frozen then
-      pet:set_state('idle')
+    local b = pet.behavior
+    if b.mode == 'frozen' then
+      b:set_mode(b.prev_mode or 'wander')
+    else
+      b.prev_mode = b.mode
+      b:set_mode('frozen')
     end
   end
 
@@ -435,7 +266,7 @@ function M.new(ctx)
       if ev.xbutton.window == pet.win then
         pet:play_audio()
         if ev.xbutton.button == 1 then
-          pet.dragging = true
+          pet.behavior.dragging = true
           pet.drag_off_x = ev.xbutton.x
           pet.drag_off_y = ev.xbutton.y
           pet:set_state('dragged')
@@ -448,12 +279,12 @@ function M.new(ctx)
       end
     elseif t == 5 then
       if ev.xbutton.window == pet.win and ev.xbutton.button == 1 then
-        pet.dragging = false
+        pet.behavior.dragging = false
         pet:set_state('idle')
-        pet:pick_destination()
+        pet.behavior:reset()
       end
     elseif t == 6 then
-      if pet.dragging and ev.xmotion.window == pet.win then
+      if pet.behavior.dragging and ev.xmotion.window == pet.win then
         pet.x = ev.xmotion.x_root - pet.drag_off_x
         pet.y = ev.xmotion.y_root - pet.drag_off_y
         X11.XMoveWindow(dpy, pet.win, pet.x, pet.y)
@@ -475,16 +306,11 @@ function M.new(ctx)
     if pet.gc then
       X11.XFreeGC(dpy, pet.gc)
     end
-    for _, frames in pairs(pet.animations) do
-      for _, fr in ipairs(frames) do
-        X11.XFreePixmap(dpy, fr.pix)
-        X11.XFreePixmap(dpy, fr.mask)
-      end
-    end
+    free_animations()
   end
 
   pet:load_animations()
-  pet:pick_destination()
+  pet.behavior:reset()
   return pet
 end
 

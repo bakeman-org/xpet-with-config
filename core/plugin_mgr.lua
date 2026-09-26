@@ -1,18 +1,6 @@
 local M = { plugins = {}, plugin_list = {}, mtimes = {}, watch_enabled = true }
-
-local function log(fmt, ...)
-  io.stderr:write('[plugin_mgr] ' .. string.format(fmt, ...) .. '\n')
-end
-
-local function file_mtime(path)
-  local p = io.popen(string.format("stat -c %%Y '%s' 2>/dev/null", path))
-  if not p then
-    return nil
-  end
-  local out = p:read('*l')
-  p:close()
-  return tonumber(out)
-end
+local Util = require('core.util')
+local log = Util.logger('plugin_mgr')
 
 local function load_one(name, ctx)
   local path = ctx.SCRIPT_DIR .. '/plugins/' .. name .. '.lua'
@@ -86,7 +74,7 @@ end
 function M.snapshot_mtimes(ctx)
   M.mtimes = {}
   for _, p in ipairs(M.watch_paths(ctx)) do
-    M.mtimes[p] = file_mtime(p)
+    M.mtimes[p] = Util.file_mtime(p)
   end
 end
 
@@ -96,7 +84,7 @@ function M.check_changes(ctx)
   end
   local changed = false
   for _, p in ipairs(M.watch_paths(ctx)) do
-    local mt = file_mtime(p)
+    local mt = Util.file_mtime(p)
     if mt and M.mtimes[p] and M.mtimes[p] ~= mt then
       log('changed: %s', p)
       changed = true

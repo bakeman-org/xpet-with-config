@@ -1,11 +1,8 @@
 local M = {}
-local UI = require("core.ui")
-local Surface = require("core.surface")
-local ffi = require("ffi")
+local Panel = require('core.panel')
+local Util = require('core.util')
 
-local function log(fmt, ...)
-    io.stderr:write("[weather] " .. string.format(fmt, ...) .. "\n")
-end
+local log = Util.logger('weather')
 
 local REFRESH_SEC   = 900      -- 15 分钟自动刷新
 local CURL_TIMEOUT  = 8        -- 单次 curl 超时
@@ -82,11 +79,7 @@ local function city_path()    return "/tmp/xpet-weather-city.txt"       end
 local function script_path()  return "/tmp/xpet-weather-fetch.sh"       end
 
 local function file_mtime(p)
-    local f = io.popen(string.format("stat -c %%Y '%s' 2>/dev/null", p))
-    if not f then return 0 end
-    local m = tonumber(f:read("*l") or "0") or 0
-    f:close()
-    return m
+    return Util.file_mtime(p) or 0
 end
 
 local function read_file(p)
@@ -140,7 +133,6 @@ end
 function M.init(ctx)
     M.ctx     = ctx
     M.ready   = true
-    M.visible = false
 
     local wcfg = ctx.config.weather or {}
     M.units        = wcfg.units or "c"
@@ -154,34 +146,82 @@ function M.init(ctx)
     M.W   = 360
     M.H   = lh * 8 + 72
 
-    M.X        = math.floor((ctx.scr_w - M.W) / 2)
-    M.Y_SHOWN  = 0
-    M.Y_HIDDEN = -(M.H + 4)
+    M.data           = nil
+    M.error          = nil
+    M.last_mtime     = 0
+    M.last_fetch_t   = -1e9
+    M.last_update_t  = -1e9
+    M.pending_notify = false
+    M.need_redraw    = true
+    M.poll_accum     = 0
+    M.redraw_accum   = REDRAW_MS
 
-    M.data          = nil
-    M.error         = nil
-    M.last_mtime    = 0
-    M.last_fetch_t  = -1e9
-    M.last_update_t = -1e9
-    M.pending_notify= false
-    M.need_redraw   = true
-    M.poll_accum    = 0
-    M.redraw_accum  = REDRAW_MS
-    M.anim_y        = M.Y_HIDDEN
-    M.target_y      = M.Y_HIDDEN
+    M.panel = Panel.new(ctx, {
+        w = M.W, h = M.H,
+        y_shown = 0,
+        theme = THEME,
+        draw = function(p) M.draw(p) end,
+        on_show = function()
+            M:refresh(true, true)   -- 打开面板：强制刷新 + 完成时弹 toast
+        end,
+        tick = function(p, dt)
+            M.poll_accum   = M.poll_accum   + dt
+            M.redraw_accum = M.redraw_accum + dt
 
-    M.surf = Surface.new(ctx, M.W, M.H)
-    M.ui   = UI.new(ctx, THEME)
-    M.ui:attach(M.surf)
+            -- 轮询输出文件：mtime 变了才重新解析
+            if M.poll_accum >= POLL_MS then
+                M.poll_accum = 0
+                local p  = state_path()
+                local mt = file_mtime(p)
+                if mt > 0 and mt ~= M.last_mtime then
+                    local txt = read_file(p)
+                    local w   = parse_weather(txt)
+                    if w then
+                        M.data          = w
+                        M.last_mtime    = mt
+                        M.error         = nil
+                        M.last_update_t = os.time()
+                        M.need_redraw   = true
 
-    M.canvas = ctx.create_canvas(M.W, M.H, {
-        x = M.X, y = M.Y_HIDDEN,
-        bg = THEME.bg, border = THEME.bg, border_width = 1,
+                        -- 用户手动打开触发的刷新：数据到达后弹 toast
+                        if M.pending_notify then
+                            M.pending_notify = false
+                            local where = w.city or "?"
+                            local t_str = (M.units == "f")
+                                and string.format("%.0f°F", w.temp * 9 / 5 + 32)
+                                or  string.format("%.0f°C", w.temp)
+                            M.ctx.show_bubble(
+                                string.format("%s  %s  %s",
+                                              where, t_str, w.desc or ""),
+                                { style = "success", duration = 2.5 })
+                        end
+                    else
+                        M.error       = "解析失败"
+                        M.need_redraw = true
+
+                        if M.pending_notify then
+                            M.pending_notify = false
+                            M.ctx.show_bubble("天气获取失败",
+                                { style = "error", duration = 3 })
+                        end
+                    end
+                end
+            end
+
+            -- 定期后台刷新（不弹 toast）
+            M:refresh(false, false)
+
+            if M.need_redraw or M.redraw_accum >= REDRAW_MS then
+                p:draw()
+                M.need_redraw  = false
+                M.redraw_accum = 0
+            end
+        end,
     })
 
     ctx.register_action("toggle_weather", function() M.toggle() end)
     ctx.on("tick",   function(dt) M.tick(dt) end)
-    ctx.on("xevent", function(t, ev) M.on_ev(t, ev) end)
+    ctx.on("xevent", function(t, ev) return M.on_ev(t, ev) end)
 
     M:refresh(true, false)   -- 启动时静默刷新一次
     log("ready (manual=%s)", tostring(M.manual_city) or "auto")
@@ -199,106 +239,17 @@ end
 
 function M.toggle()
     if not M.ready then return end
-    M.visible = not M.visible
-    if M.visible then
-        M.anim_y   = M.Y_HIDDEN
-        M.target_y = M.Y_SHOWN
-        M.canvas:move(M.X, math.floor(M.anim_y))
-        M.canvas:show()
-        M:refresh(true, true)   -- 打开面板：强制刷新 + 完成时弹 toast
-        M.draw()
-    else
-        M.target_y = M.Y_HIDDEN
-    end
+    M.panel:toggle()
 end
 
 function M.on_ev(t, ev)
-    if not M.ready or not M.visible then return end
-    local mine = false
-    if t == 4 or t == 5 then
-        mine = (ev.xbutton.window == M.canvas.win)
-    elseif t == 6 then
-        mine = (ev.xmotion.window == M.canvas.win)
-    elseif t == 12 then
-        mine = (ev.xexpose.window == M.canvas.win)
-    end
-    if not mine then return end
-
-    M.ui:on_event(t, ev)
-    if t == 12 then M.draw() end
+    if not M.ready then return false end
+    return M.panel:on_ev(t, ev)
 end
 
-function M.tick(dt_ms)
+function M.tick(dt)
     if not M.ready then return end
-
-    -- 下拉/上滑动画
-    if M.anim_y ~= M.target_y then
-        local d = M.target_y - M.anim_y
-        if math.abs(d) < 1.5 then
-            M.anim_y = M.target_y
-        else
-            M.anim_y = M.anim_y + d * 0.3
-        end
-        M.canvas:move(M.X, math.floor(M.anim_y))
-        if M.anim_y == M.target_y and M.target_y < 0 then
-            M.canvas:hide()
-            return
-        end
-    end
-
-    if not M.visible then return end
-
-    M.poll_accum   = M.poll_accum   + dt_ms
-    M.redraw_accum = M.redraw_accum + dt_ms
-
-    -- 轮询输出文件：mtime 变了才重新解析
-    if M.poll_accum >= POLL_MS then
-        M.poll_accum = 0
-        local p  = state_path()
-        local mt = file_mtime(p)
-        if mt > 0 and mt ~= M.last_mtime then
-            local txt = read_file(p)
-            local w   = parse_weather(txt)
-            if w then
-                M.data          = w
-                M.last_mtime    = mt
-                M.error         = nil
-                M.last_update_t = os.time()
-                M.need_redraw   = true
-
-                -- 用户手动打开触发的刷新：数据到达后弹 toast
-                if M.pending_notify then
-                    M.pending_notify = false
-                    local where = w.city or "?"
-                    local t_str = (M.units == "f")
-                        and string.format("%.0f°F", w.temp * 9 / 5 + 32)
-                        or  string.format("%.0f°C", w.temp)
-                    M.ctx.show_bubble(
-                        string.format("%s  %s  %s",
-                                      where, t_str, w.desc or ""),
-                        { style = "success", duration = 2.5 })
-                end
-            else
-                M.error       = "解析失败"
-                M.need_redraw = true
-
-                if M.pending_notify then
-                    M.pending_notify = false
-                    M.ctx.show_bubble("天气获取失败",
-                        { style = "error", duration = 3 })
-                end
-            end
-        end
-    end
-
-    -- 定期后台刷新（不弹 toast）
-    M:refresh(false, false)
-
-    if M.need_redraw or M.redraw_accum >= REDRAW_MS then
-        M.draw()
-        M.need_redraw  = false
-        M.redraw_accum = 0
-    end
+    M.panel:tick(dt)
 end
 
 -- ─── 绘制 ────────────────────────────────────────────────
@@ -325,13 +276,10 @@ local function fmt_wind(w)
     return string.format("%s %d", dir, math.floor(w.wind_kmph))
 end
 
-function M.draw()
-    if not M.surf then return end
-    local ui, s, T = M.ui, M.surf, M.ui.theme
+function M.draw(p)
+    if not p.surf then return end
+    local ui, s, T = p.ui, p.surf, p.ui.theme
     local lh, PAD = M.LH, M.PAD
-
-    s:clear(T.bg)
-    ui:begin()
 
     -- ── 顶栏 ──
     local hh = lh + 20
@@ -399,15 +347,11 @@ function M.draw()
     local src = "wttr.in"
     local sw  = select(1, M.ctx.get_text_size(src))
     s:text(M.W - PAD - sw, by, src, T.outline)
-
-    ui:end_frame()
-    s:flush(M.canvas.win, M.canvas.wgc, 0, 0)
 end
 
 function M.shutdown()
     M.ready = false
-    if M.surf   then M.surf:destroy() end
-    if M.canvas then M.canvas:destroy() end
+    if M.panel then M.panel:destroy() end
 end
 
 return M
