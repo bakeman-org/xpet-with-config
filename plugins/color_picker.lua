@@ -1,5 +1,4 @@
 local M = {}
-local bit = require("bit")
 local Panel = require("core.panel")
 local Clipboard = require("core.clipboard")
 local X11C = require("core.x11_const")
@@ -32,7 +31,32 @@ local L_PICKING = "取色中…"
 local L_COPY = "复制"
 local L_CLOSE = "×"
 local L_PICKING_TIP = "移动鼠标预览，左键确认，Esc 取消"
-local L_EMPTY = "点击「取色」，然后点屏幕上的任意位置"
+local L_EMPTY = "尚未取色"
+local L_IDLE_TIP = "点击「取色」开始取色"
+local SAMPLE_INTERVAL_MS = 120
+
+-- XWayland root 无 backing store，XGetImage 必失败；改用 grim 截屏采样
+local function ppm_rgb(data)
+    if not data or data:sub(1, 2) ~= "P6" then return nil end
+    local i = 3
+    local vals = {}
+    while #vals < 3 and i <= #data do
+        local c = data:sub(i, i)
+        if c == "#" then
+            i = data:find("\n", i, true) or (#data + 1)
+        elseif c:match("^%s") then
+            i = i + 1
+        else
+            local n = data:match("^%d+", i)
+            if not n then return nil end
+            vals[#vals + 1] = tonumber(n)
+            i = i + #n
+        end
+    end
+    if #vals < 3 or vals[3] == 0 then return nil end
+    local base = i + 1 -- 跳过 maxval 后的单个空白
+    return data:byte(base), data:byte(base + 1), data:byte(base + 2)
+end
 
 local function hex_of(c)
     return string.format("#%02X%02X%02X", c.r, c.g, c.b)
@@ -62,8 +86,13 @@ function M.init(ctx)
         draw = function(p) M.draw(p) end,
     })
 
+    M.clock = 0
+    M.last_sample = -1000
     ctx.register_action("toggle_color_picker", function() M.panel:toggle() end)
-    ctx.on("tick", function(dt) M.panel:tick(dt) end)
+    ctx.on("tick", function(dt)
+        M.clock = M.clock + dt
+        M.panel:tick(dt)
+    end)
     ctx.on("xevent", function(t, ev) return M.on_ev(t, ev) end)
     log("ready")
 end
@@ -72,7 +101,10 @@ function M.on_ev(t, ev)
     if not M.panel then return false end
     if M.picking then
         if t == 6 then
-            M.sample(ev.xmotion.x_root, ev.xmotion.y_root)
+            if M.clock - M.last_sample >= SAMPLE_INTERVAL_MS then
+                M.last_sample = M.clock
+                M.sample(ev.xmotion.x_root, ev.xmotion.y_root)
+            end
             return true
         elseif t == 4 then
             if ev.xbutton.button == 1 then
@@ -96,19 +128,17 @@ function M.on_ev(t, ev)
 end
 
 function M.sample(x, y)
-    local X, dpy, root = M.ctx.X11, M.ctx.dpy, M.ctx.root
     if x < 0 or y < 0 or x >= M.ctx.scr_w or y >= M.ctx.scr_h then
         return
     end
-    local img = X.XGetImage(dpy, root, x, y, 1, 1, 0xFFFFFFFF, 2)
-    if not img then return end
-    local p = X.XGetPixel(img, 0, 0)
-    X.XDestroyImage(img)
-    M.color = {
-        r = bit.band(bit.rshift(p, 16), 0xFF),
-        g = bit.band(bit.rshift(p, 8), 0xFF),
-        b = bit.band(p, 0xFF),
-    }
+    local p = io.popen(string.format(
+        "grim -g '%d,%d 1,1' -t ppm - 2>/dev/null", x, y))
+    if not p then return end
+    local data = p:read("*a")
+    p:close()
+    local r, g, b = ppm_rgb(data)
+    if not r then return end
+    M.color = { r = r, g = g, b = b }
     if M.panel.visible then M.panel:draw() end
 end
 
@@ -182,10 +212,8 @@ function M.draw(p)
     else
         s:rrect(24, y, W - 48, M.SWATCH_H, 12, T.surface_hi)
         local e_w = tw(L_EMPTY)
-        if e_w < W - 72 then
-            s:text(math.floor(W / 2 - e_w / 2),
-                   y + math.floor((M.SWATCH_H - lh) / 2), L_EMPTY, T.on_var)
-        end
+        s:text(math.floor(W / 2 - e_w / 2),
+               y + math.floor((M.SWATCH_H - lh) / 2), L_EMPTY, T.on_var)
     end
 
     y = y + M.SWATCH_H + 14
@@ -196,7 +224,7 @@ function M.draw(p)
         s:text(W - 24 - tw(rgb), y, rgb, T.on_var)
         s:text(24, y + lh + 4, M.picking and L_PICKING_TIP or " ", T.outline)
     else
-        s:text(24, y, M.picking and L_PICKING_TIP or " ", T.on_var)
+        s:text(24, y, M.picking and L_PICKING_TIP or L_IDLE_TIP, T.on_var)
     end
 
     y = y + (lh + 4) * 2 + 14

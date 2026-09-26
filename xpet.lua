@@ -217,6 +217,9 @@ actions.toggle_freeze = function()
 end
 actions.say_hello = function()
   pet:show_bubble('hello world 😀🎉')
+  -- TODO: find a hello world audio to play, haha
+  -- pet:play_audio()
+  -- pet:play_behavior()
 end
 
 plugin_mgr.load_all(config.plugins or {}, ctx)
@@ -301,9 +304,22 @@ local FRAME_MS = 16
 local WATCH_INTERVAL_MS = 800
 local watch_accum = 0
 
+-- 实测帧间隔：换大帧时单次迭代远超 16ms，固定 dt 会拖慢动画
+ffi.cdef[[
+typedef struct { long tv_sec; long tv_nsec; } xp_timespec;
+int clock_gettime(int clk, xp_timespec *tp);
+]]
+local ts = ffi.new('xp_timespec[1]')
+local function now_ms()
+  libc.clock_gettime(1, ts) -- CLOCK_MONOTONIC
+  return ts[0].tv_sec * 1000 + ts[0].tv_nsec / 1e6
+end
+
 log('xpet running')
 
 while true do
+  local t0 = now_ms()
+
   while X11.XPending(d.dpy) > 0 do
     X11.XNextEvent(d.dpy, ev)
 
@@ -330,8 +346,12 @@ while true do
     end
   end
 
+  libc.usleep(FRAME_MS * 1000)
+
+  local dt = now_ms() - t0
+
   if plugin_mgr.watch_enabled then
-    watch_accum = watch_accum + FRAME_MS
+    watch_accum = watch_accum + dt
     if watch_accum >= WATCH_INTERVAL_MS then
       watch_accum = 0
       if plugin_mgr.check_changes(ctx) then
@@ -341,7 +361,6 @@ while true do
     end
   end
 
-  pet:tick(FRAME_MS)
-  ctx.emit('tick', FRAME_MS)
-  libc.usleep(FRAME_MS * 1000)
+  pet:tick(dt)
+  ctx.emit('tick', dt)
 end

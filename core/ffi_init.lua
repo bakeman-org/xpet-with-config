@@ -1,6 +1,5 @@
 return function(SCRIPT_DIR)
   local ffi = require('ffi')
-
   local bit = require('bit')
 
   ffi.cdef([[
@@ -170,6 +169,8 @@ int XNextEvent(Display *display, XEvent *event);
 Pixmap XCreatePixmap(Display *display, Drawable d, unsigned int width,
                      unsigned int height, unsigned int depth);
 int XFreePixmap(Display *display, Pixmap pixmap);
+Pixmap XCreateBitmapFromData(Display *display, Drawable d, const char *data,
+                             unsigned int width, unsigned int height);
 GC XCreateGC(Display *display, Drawable d, unsigned long valuemask,
              void *values);
 int XFreeGC(Display *display, GC gc);

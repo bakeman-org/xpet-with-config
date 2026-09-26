@@ -3,6 +3,7 @@ local ffi = require('ffi')
 local Toast = require('core.toast')
 local X11C = require('core.x11_const')
 local PetSource = require('core.pet_source')
+require('core.source_png') -- 注册 'png' 后端
 local Behavior = require('core.behavior')
 
 function M.new(ctx)
@@ -148,9 +149,10 @@ function M.new(ctx)
   function pet:tick(dt_ms)
     local fs = pet:current_frames()
     if #fs > 0 then
+      local fd = config.frame_duration or 200
       pet.frame_time = pet.frame_time + dt_ms
-      if pet.frame_time >= (config.frame_duration or 200) then
-        pet.frame_time = 0
+      if pet.frame_time >= fd then
+        pet.frame_time = pet.frame_time - fd -- 保留过冲，慢迭代下平均帧率仍准
         pet.frame = pet.frame % #fs + 1
         pet:apply_frame()
       end

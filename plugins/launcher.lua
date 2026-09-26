@@ -159,12 +159,16 @@ function M.draw(p)
     local ui, s, T = p.ui, p.surf, p.ui.theme
     local lh = M.LH
     local W = M.W
+    local tw = function(str) return select(1, M.ctx.get_text_size(str)) end
 
     s:rect(0, 0, W, M.H, T.bg)
     s:rrect(0, 0, W, M.H, 16, T.surface)
     s:rrect(1, 1, W - 2, M.H - 2, 15, T.bg)
 
-    p.input:set_rect(16, 16, W - 32, M.SEARCH_H)
+    -- 右上角 × 关闭按钮
+    local bx = W - 16 - 28
+    local by = 16 + math.floor((M.SEARCH_H - 28) / 2)
+    p.input:set_rect(16, 16, bx - 8 - 16, M.SEARCH_H)
     p.input:draw(s, {
         bg            = T.surface_hi,
         bg_focus      = T.surface_hi,
@@ -175,6 +179,14 @@ function M.draw(p)
         cursor        = T.primary,
         sel_bg        = T.secondary_ctr,
     })
+    local close_hover = ui:hover(bx, by, 28, 28)
+    s:rrect(bx, by, 28, 28, 14, close_hover and T.surface_hi or T.bg)
+    local cl_w = tw("×")
+    s:text(bx + math.floor((28 - cl_w) / 2),
+           by + math.floor((28 - lh) / 2), "×", T.red)
+    if ui:clicked(bx, by, 28, 28) then
+        p:hide()
+    end
 
     local list_y = 16 + M.SEARCH_H + 12
     local n = #M.filtered

@@ -41,58 +41,16 @@ function M.new(ctx, w, h, opts)
 
   X11.XSelectInput(dpy, win, X11C.INPUT_MASK_BASE)
 
-  local pixmap = X11.XCreatePixmap(dpy, win, w, h, ctx.depth)
-  local pgc = X11.XCreateGC(dpy, pixmap, 0, nil)
   local wgc = X11.XCreateGC(dpy, win, 0, nil)
 
   local canvas = {
     win = win,
     w = w,
     h = h,
-    pixmap = pixmap,
-    pgc = pgc,
     wgc = wgc,
     bg = bg,
     visible = false,
   }
-
-  function canvas.clear()
-    X11.XSetForeground(dpy, pgc, bg)
-    X11.XFillRectangle(dpy, pixmap, pgc, 0, 0, w, h)
-  end
-
-  function canvas.text(self, x, y_top, str, fg, bg_override)
-    local pad_top = 4
-    local draw_y = y_top - pad_top
-    ctx.FT.xft_draw(ctx.ft_ctx, dpy, pixmap, pgc, x, draw_y, str, fg, bg_override or bg)
-  end
-
-  function canvas.rect(self, x, y, ww, hh, color)
-    X11.XSetForeground(dpy, pgc, color)
-    X11.XFillRectangle(dpy, pixmap, pgc, x, y, ww, hh)
-  end
-
-  -- rounded rectangle via 3 rectangles + 4 arcs (64ths of a degree)
-  function canvas.rrect(self, x, y, ww, hh, r, color)
-    X11.XSetForeground(dpy, pgc, color)
-    if r <= 0 or r * 2 >= ww or r * 2 >= hh then
-      X11.XFillRectangle(dpy, pixmap, pgc, x, y, ww, hh)
-      return
-    end
-    local D = 64
-    X11.XFillRectangle(dpy, pixmap, pgc, x + r, y, ww - 2 * r, hh)
-    X11.XFillRectangle(dpy, pixmap, pgc, x, y + r, r, hh - 2 * r)
-    X11.XFillRectangle(dpy, pixmap, pgc, x + ww - r, y + r, r, hh - 2 * r)
-    X11.XFillArc(dpy, pixmap, pgc, x, y, 2 * r, 2 * r, 90 * D, 90 * D)
-    X11.XFillArc(dpy, pixmap, pgc, x + ww - 2 * r, y, 2 * r, 2 * r, 0, 90 * D)
-    X11.XFillArc(dpy, pixmap, pgc, x, y + hh - 2 * r, 2 * r, 2 * r, 180 * D, 90 * D)
-    X11.XFillArc(dpy, pixmap, pgc, x + ww - 2 * r, y + hh - 2 * r, 2 * r, 2 * r, 270 * D, 90 * D)
-  end
-
-  function canvas.flush()
-    X11.XCopyArea(dpy, pixmap, win, wgc, 0, 0, w, h, 0, 0)
-    X11.XFlush(dpy)
-  end
 
   function canvas.show()
     X11.XMapWindow(dpy, win)
@@ -116,8 +74,6 @@ function M.new(ctx, w, h, opts)
   end
 
   function canvas.destroy()
-    X11.XFreePixmap(dpy, pixmap)
-    X11.XFreeGC(dpy, pgc)
     X11.XFreeGC(dpy, wgc)
     X11.XDestroyWindow(dpy, win)
   end

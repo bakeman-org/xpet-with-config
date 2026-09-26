@@ -1,5 +1,6 @@
 local M = {}
 local Util = require('core.util')
+local Surface = require('core.surface')
 
 local Toast = {}
 Toast.__index = Toast
@@ -90,6 +91,7 @@ function M.new(ctx)
   local self = setmetatable({}, Toast)
   self.ctx = ctx
   self.canvas = nil
+  self.surf = nil
   self.style = nil
   self.text = nil
   self.deadline = 0
@@ -108,11 +110,16 @@ function Toast:_ensure_canvas(w, h, style)
     self.canvas:destroy()
     self.canvas = nil
   end
+  if self.surf then
+    self.surf:destroy()
+    self.surf = nil
+  end
   self.canvas = self.ctx.create_canvas(w, h, {
     bg = style.bg,
     border = style.bg,
     border_width = 0,
   })
+  self.surf = Surface.new(self.ctx, w, h)
   self._style_ref = style
   return self.canvas
 end
@@ -168,28 +175,18 @@ function Toast:_redraw()
   if not self.canvas or not self.text then
     return
   end
-  local c, ctx = self.canvas, self.ctx
+  local c, s = self.canvas, self.surf
   local style = self.style
 
-  c:clear()
+  s:clear(style.bg)
 
   if style.accent then
-    c:rrect(0, 0, ACCENT_W, c.h, ACCENT_W / 2, style.accent)
+    s:rrect(0, 0, ACCENT_W, c.h, ACCENT_W / 2, style.accent)
   end
 
   local text_x = PAD_X + (style.accent and ACCENT_W or 0)
-  ctx.FT.xft_draw(
-    ctx.ft_ctx,
-    ctx.dpy,
-    c.pixmap,
-    c.pgc,
-    text_x,
-    PAD_Y - 4,
-    self.text,
-    style.fg,
-    style.bg
-  )
-  c:flush()
+  s:text(text_x, PAD_Y, self.text, style.fg)
+  s:flush(c.win, c.wgc, 0, 0)
 end
 
 function Toast:tick(dt_ms)
@@ -225,6 +222,10 @@ function Toast:clear()
   if self.canvas then
     self.canvas:destroy()
     self.canvas = nil
+  end
+  if self.surf then
+    self.surf:destroy()
+    self.surf = nil
   end
   self._style_ref = nil
   self.visible = false

@@ -145,6 +145,13 @@ function Panel:draw()
   if not self.surf then
     return
   end
+  -- 重入保护：draw 内部（按钮回调）再触发 draw 时挂起，帧末补一次
+  -- 否则 mrelease 未清除会导致 clicked 重复命中 -> 无限递归 stack overflow
+  if self._drawing then
+    self._redraw_pending = true
+    return
+  end
+  self._drawing = true
   local s, ui = self.surf, self.ui
   s:clear(ui.theme.bg)
   ui:begin()
@@ -153,6 +160,11 @@ function Panel:draw()
   end
   ui:end_frame()
   s:flush(self.canvas.win, self.canvas.wgc, 0, 0)
+  self._drawing = false
+  if self._redraw_pending then
+    self._redraw_pending = false
+    self:draw()
+  end
 end
 
 function Panel:on_ev(t, ev)
