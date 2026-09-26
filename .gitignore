@@ -3,3 +3,5 @@
 assets/
 wget-log*
 prompt
+.editorconfig
+.vscode/

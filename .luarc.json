@@ -1,0 +1,23 @@
+{
+    "$schema": "https://raw.githubusercontent.com/LuaLS/vscode-lua/master/setting/schema.json",
+    "runtime": {
+        "version": "LuaJIT"
+    },
+    "diagnostics": {
+        "globals": [],
+        "disable": []
+    },
+    "workspace": {
+        "checkThirdParty": false,
+        "maxPreload": 800
+    },
+    "completion": {
+        "callSnippet": "Replace",
+        "keywordSnippet": "Replace"
+    },
+    "hint": {
+        "enable": true,
+        "paramType": true,
+        "setType": true
+    }
+}

@@ -599,32 +599,34 @@ void surf_take_ximg_data(void *img_ptr, void *buf) {
 }
 
 /* 生成一个 1-bit 圆角遮罩 pixmap，供 XShapeCombineMask 使用 */
-Pixmap xpm_make_rrect_mask(Display* dpy, Window win, int W, int H, int r) {
-    Pixmap p = XCreatePixmap(dpy, win, W, H, 1);
-    if (!p) return 0;
-    GC gc = XCreateGC(dpy, p, 0, NULL);
-    XSetForeground(dpy, gc, 0);
+Pixmap xpm_make_rrect_mask(Display *dpy, Window win, int W, int H, int r) {
+  Pixmap p = XCreatePixmap(dpy, win, W, H, 1);
+  if (!p)
+    return 0;
+  GC gc = XCreateGC(dpy, p, 0, NULL);
+  XSetForeground(dpy, gc, 0);
+  XFillRectangle(dpy, p, gc, 0, 0, W, H);
+  XSetForeground(dpy, gc, 1);
+  if (r <= 0 || r * 2 >= W || r * 2 >= H) {
     XFillRectangle(dpy, p, gc, 0, 0, W, H);
-    XSetForeground(dpy, gc, 1);
-    if (r <= 0 || r * 2 >= W || r * 2 >= H) {
-        XFillRectangle(dpy, p, gc, 0, 0, W, H);
-    } else {
-        XFillRectangle(dpy, p, gc, r,     0, W - 2 * r, H);
-        XFillRectangle(dpy, p, gc, 0,     r, r,         H - 2 * r);
-        XFillRectangle(dpy, p, gc, W - r, r, r,         H - 2 * r);
-        int D = 64;
-        XFillArc(dpy, p, gc, 0,     0,     2*r, 2*r,  90*D, 90*D);
-        XFillArc(dpy, p, gc, W-2*r, 0,     2*r, 2*r,   0,   90*D);
-        XFillArc(dpy, p, gc, 0,     H-2*r, 2*r, 2*r, 180*D, 90*D);
-        XFillArc(dpy, p, gc, W-2*r, H-2*r, 2*r, 2*r, 270*D, 90*D);
-    }
-    XFreeGC(dpy, gc);
-    return p;
+  } else {
+    XFillRectangle(dpy, p, gc, r, 0, W - 2 * r, H);
+    XFillRectangle(dpy, p, gc, 0, r, r, H - 2 * r);
+    XFillRectangle(dpy, p, gc, W - r, r, r, H - 2 * r);
+    int D = 64;
+    XFillArc(dpy, p, gc, 0, 0, 2 * r, 2 * r, 90 * D, 90 * D);
+    XFillArc(dpy, p, gc, W - 2 * r, 0, 2 * r, 2 * r, 0, 90 * D);
+    XFillArc(dpy, p, gc, 0, H - 2 * r, 2 * r, 2 * r, 180 * D, 90 * D);
+    XFillArc(dpy, p, gc, W - 2 * r, H - 2 * r, 2 * r, 2 * r, 270 * D, 90 * D);
+  }
+  XFreeGC(dpy, gc);
+  return p;
 }
 
 /* Detach the XImage from whatever data pointer it holds, WITHOUT freeing.
    Used before XDestroyImage when data is owned by the caller (LuaJIT GC). */
-void surf_ximg_detach(void* img_ptr) {
-    XImage* img = (XImage*)img_ptr;
-    if (img) img->data = NULL;
+void surf_ximg_detach(void *img_ptr) {
+  XImage *img = (XImage *)img_ptr;
+  if (img)
+    img->data = NULL;
 }
