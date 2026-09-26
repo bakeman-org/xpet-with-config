@@ -50,16 +50,18 @@ function S:_ensure_ximg()
     return true
 end
 
+
 function S:destroy()
     if self.ximg then
-        -- Detach our buffer BEFORE destroying, otherwise XDestroyImage
-        -- would free() a LuaJIT GC buffer and crash.
-        self.ctx.FT.surf_take_ximg_data(self.ximg, nil)
+        -- Detach without freeing: img->data points at our LuaJIT GC buffer,
+        -- and XDestroyImage would try to free() it otherwise.
+        self.ctx.FT.surf_ximg_detach(self.ximg)
         self.ctx.X11.XDestroyImage(self.ximg)
         self.ximg = nil
     end
     self.buf = nil
 end
+
 function S:flush(win, gc, dx, dy)
     if not self:_ensure_ximg() then
         return

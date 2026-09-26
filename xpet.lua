@@ -159,6 +159,10 @@ function ctx.get_line_height()
     return FT.xft_line_height(ft_ctx)
 end
 
+function ctx.get_primary_line_height()
+    return FT.xft_primary_line_height(ft_ctx)
+end
+
 function ctx.create_canvas(w, h, opts)
     return canvas_mod.new(ctx, w, h, opts)
 end
@@ -175,8 +179,9 @@ end
 local pet = pet_mod.new(ctx)
 pet:create_window()
 ctx.pet = pet
-ctx.show_bubble = function(text)
-    pet:show_bubble(text)
+
+ctx.show_bubble = function(text, opts)
+    pet:show_bubble(text, opts)
 end
 
 actions.quit = function()

@@ -1,6 +1,7 @@
 local M = {}
 local ffi = require("ffi")
 local bit = require("bit")
+local Toast = require("core.toast")
 
 local STATE_NAMES = {"idle", "sleeping", "dragged", "happy", "walk_north", "walk_south", "walk_east", "walk_west",
                      "walk_northwest", "walk_northeast", "walk_southwest", "walk_southeast"}
@@ -47,12 +48,11 @@ function M.new(ctx)
         target_x = 0,
         target_y = 0,
         wander_wait = 0,
-        animations = {},
-        bubble = nil,
-        bubble_win = nil,
-        bubble_gc = nil,
-        bubble_until = 0
+        animations = {}
     }
+
+    -- Toast 实例（用于替代旧的白色气泡窗口）
+    pet.toast = Toast.new(ctx)
 
     local function scale_pixmap(src, sw, sh, scale)
         if scale <= 1 then
@@ -222,12 +222,10 @@ function M.new(ctx)
             pet.frame = pet.frame % #fs + 1
             pet:apply_frame()
         end
-        if pet.bubble then
-            pet.bubble_until = pet.bubble_until - dt_ms / 1000
-            if pet.bubble_until <= 0 then
-                pet:hide_bubble()
-            end
-        end
+
+        -- 气泡由 toast 统一驱动
+        pet.toast:tick(dt_ms)
+
         if not pet.dragging and not pet.frozen then
             if pet.chasing then
                 local mx, my = pet:query_mouse()
@@ -286,10 +284,8 @@ function M.new(ctx)
     end
 
     function pet:reload_animations(new_config)
-        -- swap closure's config reference so load_frames picks up new scale
         config = new_config
 
-        -- free existing pixmaps
         for _, frames in pairs(pet.animations) do
             for _, fr in ipairs(frames) do
                 X11.XFreePixmap(dpy, fr.pix)
@@ -298,7 +294,6 @@ function M.new(ctx)
         end
         pet.animations = {}
 
-        -- tear down old window
         if pet.win then
             X11.XDestroyWindow(dpy, pet.win)
             pet.win = nil
@@ -308,10 +303,8 @@ function M.new(ctx)
             pet.gc = nil
         end
 
-        -- reload frames at the new scale
         pet:load_animations()
 
-        -- rebuild window with new frame size
         pet.state = "idle"
         pet.frame = 1
         pet.frame_time = 0
@@ -367,68 +360,30 @@ function M.new(ctx)
         end
     end
 
-    -- Bubble
-    local BUBBLE_PAD = 14
-
-    function pet:compute_bubble_size(text)
-        local tw = ffi.new("int[1]")
-        local th = ffi.new("int[1]")
-        FT.xft_text_extent(ctx.ft_ctx, text, tw, th)
-        return tw[0] + BUBBLE_PAD * 2, th[0] + BUBBLE_PAD * 2 + 6
-    end
-
-    function pet:draw_bubble_content()
-        if not pet.bubble or not pet.bubble_win then
-            return
-        end
-        local root_ret = ffi.new("Window[1]")
-        local xi, yi = ffi.new("int[1]"), ffi.new("int[1]")
-        local ww, hh = ffi.new("unsigned int[1]"), ffi.new("unsigned int[1]")
-        local bw_, dd_ = ffi.new("unsigned int[1]"), ffi.new("unsigned int[1]")
-        X11.XGetGeometry(dpy, pet.bubble_win, root_ret, xi, yi, ww, hh, bw_, dd_)
-        local bw, bh = ww[0], hh[0]
-        X11.XSetForeground(dpy, pet.bubble_gc, white)
-        X11.XFillRectangle(dpy, pet.bubble_win, pet.bubble_gc, 0, 0, bw, bh)
-        FT.xft_draw(ctx.ft_ctx, dpy, pet.bubble_win, pet.bubble_gc, BUBBLE_PAD, BUBBLE_PAD - 4, pet.bubble, black, white)
-        X11.XSetForeground(dpy, pet.bubble_gc, black)
-        X11.XDrawRectangle(dpy, pet.bubble_win, pet.bubble_gc, 0, 0, bw - 1, bh - 1)
-    end
-
-    function pet:show_bubble(text)
+    -- ─── 气泡：委托给 toast 组件 ──────────────────────────────
+    function pet:show_bubble(text, opts)
         if not text or text == "" then
             return
         end
-        pet.bubble = text
-        pet.bubble_until = 5.0
-        local bw, bh = pet:compute_bubble_size(text)
-        if not pet.bubble_win then
-            local attrs = ffi.new("XSetWindowAttributes")
-            attrs.override_redirect = 1
-            attrs.background_pixel = white
-            attrs.border_pixel = black
-            local mask = 0x0200 + 0x0002 + 0x0008
-            pet.bubble_win = X11.XCreateWindow(dpy, root, 0, 0, bw, bh, 2, depth, 1, nil, mask, attrs)
-            X11.XSelectInput(dpy, pet.bubble_win, 0x00008000)
-            pet.bubble_gc = X11.XCreateGC(dpy, pet.bubble_win, 0, nil)
-        else
-            X11.XResizeWindow(dpy, pet.bubble_win, bw, bh)
-        end
-        local bx = math.max(10, math.min(pet.x + pet.w / 2 - bw / 2, scr_w - 10 - bw))
-        local by = math.max(10, math.min(pet.y - bh - 8, scr_h - 10 - bh))
-        X11.XMoveWindow(dpy, pet.bubble_win, math.floor(bx), math.floor(by))
-        X11.XMapWindow(dpy, pet.bubble_win)
-        X11.XRaiseWindow(dpy, pet.bubble_win)
-        pet:draw_bubble_content()
-        X11.XFlush(dpy)
-    end
-
-    function pet:hide_bubble()
-        if pet.bubble_win then
-            X11.XUnmapWindow(dpy, pet.bubble_win)
-        end
-        pet.bubble = nil
-        pet.bubble_until = 0
-        X11.XFlush(dpy)
+        opts = opts or {}
+        pet.toast:show(text, {
+            duration = opts.duration or 3.0,
+            style = opts.style or "plain",
+            anchor = function(t)
+                local tx = pet.x + pet.w * 0.5 - t.w * 0.5
+                if tx < 10 then
+                    tx = 10
+                end
+                if tx > scr_w - 10 - t.w then
+                    tx = scr_w - 10 - t.w
+                end
+                local ty = pet.y - t.h - 10
+                if ty < 10 then
+                    ty = pet.y + pet.h + 10
+                end
+                return tx, ty
+            end
+        })
     end
 
     function pet:play_audio()
@@ -482,34 +437,23 @@ function M.new(ctx)
                 pet.x = ev.xmotion.x_root - pet.drag_off_x
                 pet.y = ev.xmotion.y_root - pet.drag_off_y
                 X11.XMoveWindow(dpy, pet.win, pet.x, pet.y)
-                if pet.bubble and pet.bubble_win then
-                    local bw, bh = pet:compute_bubble_size(pet.bubble)
-                    local bx = math.max(10, math.min(pet.x + pet.w / 2 - bw / 2, scr_w - 10 - bw))
-                    local by = math.max(10, math.min(pet.y - bh - 8, scr_h - 10 - bh))
-                    X11.XMoveWindow(dpy, pet.bubble_win, math.floor(bx), math.floor(by))
-                end
+                -- 气泡位置由 toast 的 anchor 自动跟随，无需手动搬
             end
         elseif t == 12 then
             if ev.xexpose.window == pet.win then
                 pet:apply_frame()
-            elseif ev.xexpose.window == pet.bubble_win and pet.bubble then
-                pet:draw_bubble_content()
             end
         end
     end
 
     function pet:destroy()
-        if pet.bubble_win then
-            X11.XDestroyWindow(dpy, pet.bubble_win)
-        end
+        pet.toast:clear()
+
         if pet.win then
             X11.XDestroyWindow(dpy, pet.win)
         end
         if pet.gc then
             X11.XFreeGC(dpy, pet.gc)
-        end
-        if pet.bubble_gc then
-            X11.XFreeGC(dpy, pet.bubble_gc)
         end
         for _, frames in pairs(pet.animations) do
             for _, fr in ipairs(frames) do

@@ -33,27 +33,38 @@ local function load_one(name, ctx)
     log("loaded: %s", name)
 end
 
-function M.load_all(plugin_list, ctx)
-    M.plugin_list = plugin_list
-    for _, name in ipairs(plugin_list) do
-        load_one(name, ctx)
-    end
-    M.snapshot_mtimes(ctx)
-end
-
-function M.shutdown()
+local function unload_all()
     for _, p in ipairs(M.plugins) do
         if type(p.mod.shutdown) == "function" then pcall(p.mod.shutdown) end
     end
     M.plugins = {}
 end
 
-function M.reload(ctx)
-    log("--- hot reload ---")
-    M.shutdown()
+function M.load_all(plugin_list, ctx)
+    M.plugin_list = plugin_list or {}
     for _, name in ipairs(M.plugin_list) do
+        load_one(name, ctx)
+    end
+    M.snapshot_mtimes(ctx)
+end
+
+function M.shutdown()
+    unload_all()
+end
+
+-- 关键：reload 接受新的 plugin 列表（来自 config.plugins）
+-- 这样运行时添加的插件也会被加载，移除的插件也会被卸载。
+function M.reload(ctx, new_list)
+    new_list = new_list or M.plugin_list or {}
+    log("--- hot reload (old=%d, new=%d) ---",
+        #M.plugin_list, #new_list)
+
+    unload_all()
+    for _, name in ipairs(new_list) do
         package.loaded["plugins." .. name] = nil
     end
+
+    M.plugin_list = new_list
     for _, name in ipairs(M.plugin_list) do
         load_one(name, ctx)
     end

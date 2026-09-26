@@ -191,7 +191,10 @@ return function(SCRIPT_DIR)
     void  surf_fill(uint32_t* buf, int W, int H, int x, int y, int w, int h, unsigned int color);
     void  surf_rrect_aa(uint32_t* buf, int W, int H, int x, int y, int w, int h, int r, unsigned int color);
     void  surf_take_ximg_data(void* img, void* buf);
-    
+    int xft_primary_line_height(void* ctx);
+    Pixmap xpm_make_rrect_mask(Display* dpy, Window win, int W, int H, int r);
+    void surf_ximg_detach(void* img);
+
     int    audio_init(void);
     void   audio_shutdown(void);
     int    audio_play(const char* path);

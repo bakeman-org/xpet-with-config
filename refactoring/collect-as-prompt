@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# collect_folder_content_to_prompt — 把目录下所有文本文件转成带路径的 prompt 文本
+#
+# 用法:
+#   ./collect_folder_content_to_prompt [选项...] <路径...> [> 输出文件]
+#
+# 选项:
+#   -d <目录名>  跳过匹配的目录（可多次指定，自动去尾斜杠）
+#   -e <扩展名>  跳过匹配扩展名的文件（可多次指定）
+#
+# 示例:
+#   ./collect_folder_content_to_prompt -d assets . > dump.txt
+#   ./collect_folder_content_to_prompt -d .git -d node_modules src > dump.txt
+#   ./collect_folder_content_to_prompt -e log -e tmp . > all.txt
+
+set -euo pipefail
+
+binary_ext=(
+  png jpg jpeg gif bmp webp ico
+  pdf zip tar gz bz2 xz 7z rar
+  exe so dll bin oa obj
+  mp4 mp3 wav flac mkv avi mov
+)
+
+ignore_dirs=()
+ignore_exts=()
+
+while getopts "d:e:h" opt; do
+  case "$opt" in
+    d)
+      # 去掉首尾斜杠和空格，存成纯目录名
+      local_name="${OPTARG#"${OPTARG%%[!/]*}"}"
+      local_name="${local_name%"${local_name##*[!/]}"}"
+      [[ -z "$local_name" ]] && local_name="$OPTARG"
+      ignore_dirs+=("$local_name")
+      ;;
+    e) ignore_exts+=("$OPTARG") ;;
+    h)
+      cat <<EOF
+用法: $0 [选项...] <路径...>
+
+选项:
+  -d <目录名>  跳过指定目录（可多次使用，自动忽略尾斜杠）
+  -e <扩展名>  跳过指定扩展名的文件（可多次使用）
+  -h           显示帮助
+
+示例:
+  $0 -d assets . > dump.txt
+  $0 -d .git -d node_modules src > dump.txt
+EOF
+      exit 0
+      ;;
+    *) exit 1 ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+is_binary_ext() {
+  local fn="$1"
+  local ext="${fn##*.}"
+  ext="${ext,,}"
+  for be in "${binary_ext[@]}"; do
+    [[ "$ext" == "$be" ]] && return 0
+  done
+  return 1
+}
+
+is_ignored_ext() {
+  [[ ${#ignore_exts[@]} -eq 0 ]] && return 1
+  local fn="$1"
+  local ext="${fn##*.}"
+  ext="${ext,,}"
+  for ie in "${ignore_exts[@]}"; do
+    [[ "$ext" == "$ie" ]] && return 0
+  done
+  return 1
+}
+
+emit() {
+  local f="$1"
+  if is_ignored_ext "$f"; then
+    return
+  fi
+
+  printf '\n================================================================\n'
+  printf '[file path]: %s\n' "$f"
+
+  if is_binary_ext "$f"; then
+    printf '[binary file, skip content]\n'
+    return
+  fi
+
+  printf '[file content begin]\n'
+  cat "$f"
+  [[ -n "$(tail -c 1 "$f" 2>/dev/null)" ]] && printf '\n'
+  printf '[file content end]\n'
+}
+
+[[ $# -eq 0 ]] && { echo "用法: $0 [-d 目录] [-e 扩展名] <路径...>" >&2; exit 1; }
+
+for arg in "$@"; do
+  if [[ -d "$arg" ]]; then
+    find_args=()
+    if [[ ${#ignore_dirs[@]} -gt 0 ]]; then
+      find_args+=( \( )
+      first=1
+      for id in "${ignore_dirs[@]}"; do
+        if (( first )); then
+          first=0
+        else
+          find_args+=( -o )
+        fi
+        find_args+=( -name "$id" -type d )
+      done
+      find_args+=( \) -prune -o )
+    fi
+    find_args+=( -type f -print0 )
+
+    while IFS= read -r -d '' f; do
+      emit "$f"
+    done < <(find "$arg" "${find_args[@]}" | sort -z)
+  elif [[ -f "$arg" ]]; then
+    emit "$arg"
+  else
+    echo "跳过（不存在）: $arg" >&2
+  fi
+done

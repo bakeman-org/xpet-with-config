@@ -86,11 +86,11 @@ function M.new(ctx, w, h, opts)
         canvas.visible = false
     end
 
-    function canvas.move(nx, ny)
+    function canvas.move(self, nx, ny)
         X11.XMoveWindow(dpy, win, nx, ny)
     end
 
-    function canvas.resize(nw, nh)
+    function canvas.resize(self, nw, nh)
         X11.XResizeWindow(dpy, win, nw, nh)
     end
 
