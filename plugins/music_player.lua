@@ -2,8 +2,9 @@ local M = {}
 local ffi = require("ffi")
 local UI = require("core.ui")
 local Surface = require("core.surface")
+local Clipboard = require("core.clipboard")
+local TextInput = require("core.text_input")
 
--- ─── 辅助函数 ─────────────────────────────────────────
 local function log(fmt, ...)
     io.stderr:write("[music_player] " .. string.format(fmt, ...) .. "\n")
 end
@@ -37,6 +38,7 @@ local function scan(dir, AUD)
         if p ~= nil then
             local path = ffi.string(p)
             list[#list + 1] = {
+                idx = #list + 1,
                 path = path,
                 title = strip_ext(basename(path)),
                 duration = nil,
@@ -60,7 +62,6 @@ local function fmt_keybind(ctx, action)
     return "?"
 end
 
--- ─── Material 3 深色主题（覆盖 UI 默认值）─────────────
 local THEME = {
     bg            = 0x141218,
     surface       = 0x1d1b20,
@@ -77,7 +78,6 @@ local THEME = {
     red           = 0xf2b8b5,
 }
 
--- ─── 中文标签 ─────────────────────────────────────────
 local L_MUSIC = "音乐"
 local L_PREV  = "上首"
 local L_NEXT  = "下首"
@@ -98,7 +98,9 @@ local S_NO_TRK  = "未选择曲目"
 
 local SEEK_STEP = 10
 
--- ─── 初始化 ───────────────────────────────────────────
+local CTRL_MASK  = 0x4
+local SHIFT_MASK = 0x1
+
 function M.init(ctx)
     M.ctx = ctx
     M.visible = false
@@ -107,7 +109,6 @@ function M.init(ctx)
     if ctx.AUD.audio_init() ~= 0 then return end
     M.ready = true
 
-    -- 恢复持久化状态
     local S = ctx._music_state or {}
     M.volume = S.volume or 80
     M.scroll = S.scroll or 0
@@ -115,16 +116,13 @@ function M.init(ctx)
     ctx.AUD.audio_set_volume(M.volume)
     M.toggle_hint = fmt_keybind(ctx, "toggle_music_player")
 
-    -- 行高（优先用主字体避免被 emoji/CJK 撑大）
-    local raw_lh = ctx.get_line_height()
-    local lh = raw_lh
+    local lh = ctx.get_line_height()
     if ctx.get_primary_line_height then
         local plh = ctx.get_primary_line_height()
         if plh and plh >= 16 then lh = plh end
     end
     M.LH = lh
 
-    -- 尺寸
     M.PAD     = 24
     M.W       = math.min(ctx.scr_w - 80, 920)
     M.COVER   = 96
@@ -134,7 +132,6 @@ function M.init(ctx)
     M.ROW_H   = lh + 22
     M.BOTBAR  = lh + 20
 
-    -- 信息区高度
     M.INFO_H = 20 + M.COVER + 16 + 6 + (lh + 4) + 12 + M.CTRL_H + 20
 
     local top_h = M.APPBAR + M.INFO_H + M.SECT_H
@@ -145,14 +142,13 @@ function M.init(ctx)
     M.YH    = -(M.H + 4)
     M.YS    = 0
 
-    -- 控制按钮宽度（根据标签宽度计算）
     local function tw(s) return select(1, ctx.get_text_size(s)) end
     local wmax = math.max(tw(L_PREV), tw(L_REW), tw(L_PLAY), tw(L_FF), tw(L_NEXT))
     M.BTN_W = wmax + 40
     M.BTN_GAP = 16
 
-    -- 播放列表
     M.playlist = scan(ctx.config.audio_panel_dir, ctx.AUD)
+    M.filtered = M.playlist
     M.playing  = false
     M.paused   = false
     M.pos      = 0
@@ -163,24 +159,86 @@ function M.init(ctx)
     M.anim_y   = M.YH
     M.target_y = M.YH
 
-    -- Surface + UI
+    M.search_active = false
+    M.search_query  = ""
+    M.rect_search   = { x = 0, y = 0, w = 0, h = 0 }
+    M._kbd_grabbed  = false
+    M._code_f = ctx.X11.XKeysymToKeycode(ctx.dpy,
+                ctx.X11.XStringToKeysym("f"))
+    M._code_space = ctx.X11.XKeysymToKeycode(ctx.dpy,
+                    ctx.X11.XStringToKeysym("space"))
+
     M.surf = Surface.new(ctx, M.W, M.H)
     M.ui = UI.new(ctx, THEME)
     M.ui:attach(M.surf)
 
-    -- Canvas 窗口
     M.canvas = ctx.create_canvas(M.W, M.H, {
         x = M.X, y = M.YH, bg = THEME.bg, border = THEME.bg, border_width = 1,
     })
 
+    M._ic = ctx.xim_create_ic and ctx.xim_create_ic(M.canvas.win) or nil
+
+    M.input = TextInput.new(ctx, {
+        placeholder = "Ctrl+F 搜索",
+        on_change   = function(v) M.search_query = v; M:apply_filter() end,
+        on_submit   = function()
+            M.search_active = false
+            M.input:blur()
+            M:_unfocus_keyboard()
+        end,
+        on_cancel   = function()
+            M.search_active = false
+            M.input:blur()
+            M:_unfocus_keyboard()
+        end,
+    })
+
     ctx.register_action("toggle_music_player", function() M.toggle() end)
     ctx.on("tick",   function(dt) M.tick(dt) end)
-    ctx.on("xevent", function(t, ev) M.on_ev(t, ev) end)
+    ctx.on("xevent", function(t, ev) return M.on_ev(t, ev) end)
 
     log("ready: %d tracks, %dx%d lh=%d", #M.playlist, M.W, M.H, lh)
 end
 
--- ─── 显示/隐藏 ────────────────────────────────────────
+function M:apply_filter()
+    local q = M.search_query
+    if not q or q == "" then
+        M.filtered = M.playlist
+    else
+        local ql = q:lower()
+        local out = {}
+        for _, it in ipairs(M.playlist) do
+            if it.title:lower():find(ql, 1, true) then
+                out[#out + 1] = it
+            end
+        end
+        M.filtered = out
+    end
+    local mx = math.max(0, #M.filtered - M.VROWS)
+    if M.scroll > mx then M.scroll = mx end
+    if M.scroll < 0 then M.scroll = 0 end
+end
+
+function M:_focus_keyboard()
+    if M._kbd_grabbed then return end
+    local X, dpy = M.ctx.X11, M.ctx.dpy
+    M.canvas:enable_keyboard(true)
+    X.XGrabKeyboard(dpy, M.canvas.win, 0, 1, 1, 0)
+    if M._ic then X.XSetICFocus(M._ic) end
+    X.XFlush(dpy)
+    M._kbd_grabbed = true
+end
+
+function M:_unfocus_keyboard()
+    if not M._kbd_grabbed then return end
+    local X, dpy = M.ctx.X11, M.ctx.dpy
+    if M._ic then X.XUnsetICFocus(M._ic) end
+    X.XUngrabKeyboard(dpy, 0)
+    M.canvas:enable_keyboard(false)
+    X.XFlush(dpy)
+    M._kbd_grabbed = false
+end
+
 function M.show()
     M.anim_y   = M.YH
     M.target_y = M.YS
@@ -193,6 +251,11 @@ end
 function M.hide()
     M.target_y = M.YH
     M.visible  = false
+    if M.search_active then
+        M.search_active = false
+        M.input:blur()
+        M:_unfocus_keyboard()
+    end
 end
 
 function M.toggle()
@@ -203,7 +266,6 @@ function M.toggle()
     if M.visible then M.hide() else M.show() end
 end
 
--- ─── 播放控制 ─────────────────────────────────────────
 function M.play_idx(i)
     if i < 1 or i > #M.playlist then return end
     M.cur = i
@@ -246,7 +308,6 @@ function M.set_volume_pct(v)
     M.redraw = true
 end
 
--- ─── 布局 ─────────────────────────────────────────────
 local function LAYOUT(M)
     local lh  = M.LH
     local PAD = M.PAD
@@ -257,7 +318,6 @@ local function LAYOUT(M)
     local list_y = sect_y + M.SECT_H
     local bot_y  = M.H - M.BOTBAR
 
-    -- 信息区内部
     local cover_x = PAD
     local cover_y = info_y + 20
     local info_x  = cover_x + M.COVER + 20
@@ -272,7 +332,6 @@ local function LAYOUT(M)
     local ctrl_y = time_y + lh + 8
     local ctrl_h = M.CTRL_H
 
-    -- 控制按钮居中
     local total_w = M.BTN_W * 5 + M.BTN_GAP * 4
     local btn_x0  = math.floor((M.W - total_w) / 2)
 
@@ -298,43 +357,149 @@ local function LAYOUT(M)
 end
 M.LAYOUT = LAYOUT
 
--- ─── 事件 ─────────────────────────────────────────────
-function M.on_ev(t, ev)
-    if not M.ready or not M.canvas or not M.visible then return end
+local function lookup_input(M, ev)
+    local X = M.ctx.X11
+    local buf = ffi.new("char[256]")
+    local ks  = ffi.new("KeySym[1]")
+    local n, sym, status
 
-    -- 过滤：只处理本窗口的事件
-    local from_us = false
-    if t == 4 or t == 5 then
-        from_us = (ev.xbutton.window == M.canvas.win)
-    elseif t == 6 then
-        from_us = (ev.xmotion.window == M.canvas.win)
-    elseif t == 12 then
-        from_us = (ev.xexpose.window == M.canvas.win)
+    if M._ic then
+        local st = ffi.new("int[1]")
+        n = X.Xutf8LookupString(M._ic, ffi.cast("XKeyEvent*", ev),
+                                buf, 255, ks, st)
+        status = st[0]
+        sym = ks[0]
+    else
+        n = X.XLookupString(ffi.cast("XKeyEvent*", ev),
+                            buf, 255, ks, nil)
+        status = 4
+        sym = ks[0]
     end
-    if not from_us then return end
+
+    local text = ""
+    if n > 0 and (status == 2 or status == 4) then
+        text = ffi.string(buf, n)
+    end
+    return text, sym, status
+end
+
+function M.on_ev(t, ev)
+    if not M.ready or not M.canvas then return false end
+    if not M.visible then return false end
+
+    if t == 2 then
+        if ev.xkey.keycode == M._code_space then
+            local bit = M.ctx.bit
+            if bit.band(ev.xkey.state, CTRL_MASK) ~= 0 then
+                os.execute("fcitx5-remote -t >/dev/null 2>&1 &")
+                return true
+            end
+        end
+
+        if M.search_active then
+            local bit = M.ctx.bit
+            local text, sym, status = lookup_input(M, ev)
+            local ctrl  = bit.band(ev.xkey.state, CTRL_MASK) ~= 0
+            local shift = bit.band(ev.xkey.state, SHIFT_MASK) ~= 0
+
+            if status == 1 then
+                M.draw()
+                return true
+            end
+
+            if M.input:on_key(sym, ctrl, shift, text) then
+                M.input:_ensure_cursor_visible()
+                M.draw()
+                return true
+            end
+            M.draw()
+            return true
+        end
+
+        if ev.xkey.keycode == M._code_f then
+            M.search_active = true
+            M:_focus_keyboard()
+            M.input:focus()
+            M.draw()
+            return true
+        end
+
+        return false
+    end
+
+    if t == 12 and ev.xexpose.window == M.canvas.win then
+        M.draw()
+        return true
+    end
+
+    if t == 4 or t == 5 then
+        if ev.xbutton.window ~= M.canvas.win then return false end
+    elseif t == 6 then
+        if ev.xmotion.window ~= M.canvas.win then return false end
+    else
+        return false
+    end
 
     M.ui:on_event(t, ev)
     M.redraw = true
 
-    -- 滚轮滚动列表
     if t == 4 then
-        local l = LAYOUT(M)
-        if ev.xbutton.y >= l.list_y and ev.xbutton.y < l.list_end then
-            if ev.xbutton.button == 4 then
-                M.scroll = math.max(0, M.scroll - 1)
-            elseif ev.xbutton.button == 5 then
-                local mx = math.max(0, #M.playlist - M.VROWS)
-                M.scroll = math.min(mx, M.scroll + 1)
+        local mx, my = ev.xbutton.x, ev.xbutton.y
+        local btn = ev.xbutton.button
+        local bit = M.ctx.bit
+        local shift_held = bit.band(ev.xbutton.state, SHIFT_MASK) ~= 0
+
+        if btn == 4 or btn == 5 then
+            local l = LAYOUT(M)
+            if my >= l.list_y and my < l.list_end then
+                if btn == 4 then
+                    M.scroll = math.max(0, M.scroll - 1)
+                else
+                    local mx_scroll = math.max(0, #M.filtered - M.VROWS)
+                    M.scroll = math.min(mx_scroll, M.scroll + 1)
+                end
             end
+            M.draw()
+            return true
+        end
+
+        if M.input:on_mouse_press(mx, my, shift_held) then
+            if not M.search_active then
+                M.search_active = true
+                M:_focus_keyboard()
+            end
+            M.input:focus()
+            M.draw()
+            return true
+        end
+
+        local l = LAYOUT(M)
+        local in_list = (my >= l.list_y and my < l.list_end)
+        if not in_list and M.search_active then
+            M.search_active = false
+            M.input:blur()
+            M:_unfocus_keyboard()
+            M.draw()
+        end
+    elseif t == 5 then
+        M.input:on_mouse_release()
+        return true
+    elseif t == 6 then
+        if M.input:on_mouse_move(ev.xmotion.x, ev.xmotion.y) then
+            M.input:_ensure_cursor_visible()
+            M.draw()
+            return true
         end
     end
+
+    return true
 end
 
--- ─── Tick ─────────────────────────────────────────────
 function M.tick(dt)
     if not M.ready or not M.canvas then return end
 
-    -- 下拉动画
+    M.input:tick(dt)
+
     if M.anim_y ~= M.target_y then
         local d = M.target_y - M.anim_y
         if math.abs(d) < 1.5 then
@@ -353,12 +518,10 @@ function M.tick(dt)
 
     local A = M.ctx.AUD
 
-    -- 自动下一首
     if A.audio_finished() == 1 and #M.playlist > 0 then
         M.next()
     end
 
-    -- 定期轮询
     M.poll = M.poll + dt
     if M.poll >= 200 then
         M.poll = 0
@@ -372,7 +535,6 @@ function M.tick(dt)
         end
     end
 
-    -- 懒加载时长探测
     if M.probe <= #M.playlist then
         local it = M.playlist[M.probe]
         if not it.duration then
@@ -383,13 +545,12 @@ function M.tick(dt)
         M.probe = M.probe + 1
     end
 
-    if M.redraw then
+    if M.redraw or M.input.focused then
         M.draw()
         M.redraw = false
     end
 end
 
--- ─── 绘制 ─────────────────────────────────────────────
 function M.draw()
     if not M.surf then return end
     local ui, s, T = M.ui, M.surf, M.ui.theme
@@ -400,7 +561,6 @@ function M.draw()
     s:clear(T.bg)
     ui:begin()
 
-    -- ═══════ 顶部栏 ═══════
     s:rect(0, 0, M.W, l.app_h, T.surface)
     local ay = math.floor((l.app_h - lh) / 2)
 
@@ -411,7 +571,6 @@ function M.draw()
     local sub = cur and cur.title or "—"
     s:text(M.PAD + mus_w + 16, ay, truncate(sub, 40), T.on_var)
 
-    -- 快捷键提示 + 关闭按钮
     local close_sz = 32
     local close_x = M.W - M.PAD - close_sz
     local close_y = math.floor((l.app_h - close_sz) / 2)
@@ -432,8 +591,6 @@ function M.draw()
 
     s:rect(0, l.app_h - 1, M.W, 1, T.outline)
 
-    -- ═══════ 信息区 ═══════
-    -- 封面
     s:rrect(l.cover_x, l.cover_y, l.cover_sz, l.cover_sz, 20, T.surface_hi)
     local g_ts = "♪"
     local gw = tw(g_ts)
@@ -441,12 +598,10 @@ function M.draw()
            math.floor(l.cover_y + l.cover_sz / 2 - lh / 2),
            g_ts, T.primary)
 
-    -- 标题 + 艺术家
     local title = cur and cur.title or S_NO_TRK
     s:text(l.info_x, l.cover_y + 8, truncate(title, 48), T.on_surface)
     s:text(l.info_x, l.cover_y + 8 + lh + 6, cur and S_NO_ART or "", T.on_var)
 
-    -- 进度滑块
     if M.dur > 0 then
         local new_pos, changed = ui:slider("mp_prog",
             l.prog_x, l.prog_y, l.prog_w, M.pos,
@@ -457,17 +612,14 @@ function M.draw()
             M.ctx.AUD.audio_seek(M.pos)
         end
     else
-        -- 无曲目：空轨道
         s:rrect(l.prog_x, l.prog_y, l.prog_w, 6, 3, T.surface_hi)
     end
 
-    -- 时间行
     s:text(l.prog_x, l.time_y, fmt_time(M.pos), T.on_var)
     local dur_str = fmt_time(M.dur)
     local dur_w = tw(dur_str)
     s:text(l.prog_x + l.prog_w - dur_w, l.time_y, dur_str, T.on_var)
 
-    -- 控制按钮
     local btns = {
         { "prev", L_PREV, false },
         { "rew",  L_REW,  false },
@@ -488,79 +640,90 @@ function M.draw()
         end
     end
 
-    -- ═══════ 分区标题 ═══════
     s:rect(0, l.sect_y, M.W, l.sect_h, T.bg)
     local sy = l.sect_y + math.floor((l.sect_h - lh) / 2)
     s:text(M.PAD, sy, L_QUEUE, T.primary)
+
     local cnt = string.format("%d / %d", M.cur, #M.playlist)
     local cnt_w = tw(cnt)
     s:text(M.W - M.PAD - cnt_w, sy, cnt, T.outline)
+
+    local sq_w = 260
+    local sq_h = lh + 4
+    local sq_x = M.W - M.PAD - cnt_w - 16 - sq_w
+    local sq_y = l.sect_y + math.floor((l.sect_h - sq_h) / 2)
+    M.rect_search.x, M.rect_search.y = sq_x, sq_y
+    M.rect_search.w, M.rect_search.h = sq_w, sq_h
+
+    M.input:set_rect(sq_x, sq_y, sq_w, sq_h)
+    M.input:draw(s, {
+        bg            = T.surface_hi,
+        bg_focus      = T.surface_hi,
+        radius        = math.floor(sq_h / 2),
+        outline_focus = T.primary,
+        text          = T.on_surface,
+        text_dim      = T.outline,
+        cursor        = T.primary,
+        sel_bg        = T.primary_hi,
+    })
+
     s:rect(0, l.sect_y + l.sect_h - 1, M.W, 1, T.outline)
 
-    -- ═══════ 列表 ═══════
-    local mx = math.max(0, #M.playlist - M.VROWS)
+    local mx = math.max(0, #M.filtered - M.VROWS)
     if M.scroll > mx then M.scroll = mx end
 
     for i = 1, M.VROWS do
-        local idx = M.scroll + i
-        if idx > #M.playlist then break end
+        local li = M.scroll + i
+        if li > #M.filtered then break end
+        local it = M.filtered[li]
         local ry = l.list_y + (i - 1) * M.ROW_H
-        local it = M.playlist[idx]
-        local sel = (idx == M.cur)
+        local sel = (it.idx == M.cur)
         local row_bg = sel and T.surface_hi or T.bg
 
         s:rect(0, ry, M.W, M.ROW_H, row_bg)
         if sel then s:rect(0, ry, 4, M.ROW_H, T.primary) end
 
-        -- 数字徽章
         local bsz = 28
         local bcy = ry + math.floor((M.ROW_H - bsz) / 2)
         local badge_bg = sel and T.primary or T.surface_hi
         local badge_fg = sel and T.on_primary or T.on_var
         s:rrect(M.PAD, bcy, bsz, bsz, 8, badge_bg)
-        local num_str = string.format("%d", idx)
+        local num_str = string.format("%d", it.idx)
         local nw = tw(num_str)
         s:text(math.floor(M.PAD + bsz / 2 - nw / 2),
                math.floor(bcy + (bsz - lh) / 2), num_str, badge_fg)
 
-        -- 标题
         local tx = M.PAD + bsz + 16
         local ty = ry + math.floor((M.ROW_H - lh) / 2)
         s:text(tx, ty, truncate(it.title, 60),
                sel and T.on_surface or T.on_var)
 
-        -- 时长
         if it.duration then
             local ds = fmt_time(it.duration)
             local dw = tw(ds)
             s:text(M.W - M.PAD - dw, ty, ds, T.outline)
         end
 
-        -- 分隔线
-        if i < M.VROWS and idx < #M.playlist then
+        if i < M.VROWS and li < #M.filtered then
             s:rect(M.PAD, ry + M.ROW_H - 1, M.W - M.PAD * 2, 1, T.outline)
         end
 
-        -- 行点击
         if ui:clicked(0, ry, M.W, M.ROW_H) then
-            M.play_idx(idx)
+            M.play_idx(it.idx)
         end
     end
 
-    -- 滚动条
     if mx > 0 then
         local track_h = M.VROWS * M.ROW_H
-        local bh = math.max(32, math.floor(track_h * M.VROWS / #M.playlist))
+        local bh = math.max(32, math.floor(track_h * M.VROWS / #M.filtered))
         local by = l.list_y + math.floor((track_h - bh) * M.scroll / mx)
         s:rrect(M.W - 6, by, 4, bh, 2, T.outline)
     end
 
-    -- ═══════ 底部栏 ═══════
     s:rect(0, l.bot_y, M.W, l.bot_h, T.surface)
     s:rect(0, l.bot_y, M.W, 1, T.outline)
     local bty = l.bot_y + math.floor((l.bot_h - lh) / 2)
 
-    -- 状态
     local status, dot_col
     if M.cur == 0 then
         status = S_READY
@@ -575,7 +738,12 @@ function M.draw()
     s:rrect(M.PAD, bty + math.floor(lh / 2) - 4, 8, 8, 4, dot_col)
     s:text(M.PAD + 20, bty, status, T.on_var)
 
-    -- 音量
+    if M.search_query ~= "" then
+        local hint = string.format("筛选 %d / %d", #M.filtered, #M.playlist)
+        local hw = tw(hint)
+        s:text(math.floor(M.W / 2 - hw / 2), bty, hint, T.outline)
+    end
+
     local pct_str = string.format("%d%%", M.volume)
     local pct_w = tw(pct_str)
     local vol_w = 100
@@ -602,6 +770,11 @@ function M.shutdown()
             scroll = M.scroll,
             cur    = M.cur,
         }
+    end
+    M:_unfocus_keyboard()
+    if M._ic and M.ctx and M.ctx.xim_destroy_ic then
+        M.ctx.xim_destroy_ic(M._ic)
+        M._ic = nil
     end
     if M.surf then M.surf:destroy() end
     if M.canvas then M.canvas:destroy() end

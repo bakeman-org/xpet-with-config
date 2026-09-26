@@ -15,6 +15,16 @@ return function(SCRIPT_DIR)
     typedef unsigned long XID;
     typedef struct _XImage XImage;
 
+    typedef struct _XIM *XIM;
+    typedef struct _XIC *XIC;
+    typedef unsigned long XIMStyle;
+    typedef void *XrmDatabase;
+
+    typedef struct {
+        int type; unsigned long serial; int send_event; Display *display;
+        Window window;
+    } XAnyEvent;
+
     typedef struct {
         int type; unsigned long serial; int send_event; Display *display;
         Window window; Window root; Window subwindow; unsigned long time;
@@ -38,6 +48,7 @@ return function(SCRIPT_DIR)
     } XMotionEvent;
     typedef union {
         int            type;
+        XAnyEvent      xany;
         XKeyEvent      xkey;
         XButtonEvent   xbutton;
         XExposeEvent   xexpose;
@@ -176,6 +187,33 @@ return function(SCRIPT_DIR)
     int XpmReadFileToPixmap(Display *display, Drawable d, const char *filename,
                             Pixmap *pixmap_return, Pixmap *mask_return,
                             XpmAttributes *attributes);
+
+    KeySym  XLookupKeysym(XKeyEvent *key_event, int index);
+    int     XLookupString(XKeyEvent *event_struct,
+                          char *buffer_return, int bytes_buffer,
+                          KeySym *keysym_return, void *status_in_out);
+
+    int XGrabKeyboard(Display *display, Window grab_window,
+                      Bool owner_events, int pointer_mode,
+                      int keyboard_mode, unsigned long time);
+    int XUngrabKeyboard(Display *display, unsigned long time);
+    int XSetInputFocus(Display *display, Window focus,
+                       int revert_to, unsigned long time);
+    Window XGetInputFocus(Display *display, Window *focus_return,
+                          int *revert_to_return);
+    int XAllowEvents(Display *display, int event_mode, unsigned long time);
+
+    XIM  XOpenIM(Display *display, XrmDatabase db, char *res_name, char *res_class);
+    int  XCloseIM(XIM im);
+    XIC  XCreateIC(XIM im, ...);
+    void XDestroyIC(XIC ic);
+    void XSetICFocus(XIC ic);
+    void XUnsetICFocus(XIC ic);
+    Bool XFilterEvent(XEvent *event, Window w);
+    int  Xutf8LookupString(XIC ic, XKeyEvent *event,
+                           char *buffer_return, int bytes_buffer,
+                           KeySym *keysym_return, int *status_return);
+
     int usleep(unsigned int usec);
 
     int    xft_init(void);
@@ -208,10 +246,9 @@ return function(SCRIPT_DIR)
     int    audio_scan_dir(const char* dir);
     const char* audio_scan_get(int idx);
     void   audio_seek(double sec);
-    double      audio_probe_duration(const char* path);
+    double audio_probe_duration(const char* path);
     int    audio_play_sfx(const char* path, int vol_0_100);
     int    audio_finished(void);
-
     ]]
 
     local X11 = ffi.load("X11")
@@ -223,18 +260,11 @@ return function(SCRIPT_DIR)
     local has_aud, AUD = pcall(function()
         return ffi.load(SCRIPT_DIR .. "/xpet_audio.so")
     end)
-    if not has_aud then
-        AUD = nil
-    end
+    if not has_aud then AUD = nil end
 
     return {
-        ffi = ffi,
-        bit = bit,
-        X11 = X11,
-        Xext = Xext,
-        Xpm = Xpm,
-        libc = libc,
-        FT = FT,
-        AUD = AUD
+        ffi = ffi, bit = bit,
+        X11 = X11, Xext = Xext, Xpm = Xpm,
+        libc = libc, FT = FT, AUD = AUD,
     }
 end

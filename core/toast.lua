@@ -9,7 +9,13 @@ local RADIUS = 14
 local ACCENT_W = 4
 local DEFAULT_DURATION = 3.0
 
--- Material 3 dark palette + a "plain" white legacy bubble
+-- 硬限制：单条 toast 最多显示多少字符
+local MAX_CHARS = 512
+-- 单行最大宽度 = 屏宽 × 该比例
+local MAX_LINE_W_RATIO = 0.72
+-- 最大行数，超出直接截断
+local MAX_LINES = 8
+
 local STYLES = {
     info    = { bg = 0x1e1e2e, fg = 0xe6e1e5, accent = 0x89b4fa },
     success = { bg = 0x1e1e2e, fg = 0xe6e1e5, accent = 0xa6e3a1 },
@@ -21,6 +27,87 @@ local STYLES = {
 local function resolve_style(s)
     if type(s) == "table" then return s end
     return STYLES[s or "info"] or STYLES.info
+end
+
+local function utf8_step(s, i)
+    local b = s:byte(i)
+    if not b then return 1 end
+    if b < 0x80 then return 1 end
+    if b < 0xE0 then return 2 end
+    if b < 0xF0 then return 3 end
+    return 4
+end
+
+local function utf8_truncate(s, max_chars)
+    local i = 1
+    local L = #s
+    local n = 0
+    while i <= L do
+        if n >= max_chars then
+            -- 需要截断
+            local cut = i
+            while cut > 1 do
+                local b = s:byte(cut)
+                if b and b >= 0x80 and b < 0xC0 then cut = cut - 1
+                else break end
+            end
+            return s:sub(1, cut - 1) .. "…"
+        end
+        i = i + utf8_step(s, i)
+        n = n + 1
+    end
+    return s
+end
+
+local function wrap_text(ctx, text, max_w, max_lines)
+    -- 先测整段宽度；不够则逐字符换行
+    if select(1, ctx.get_text_size(text)) <= max_w then
+        return text, 1
+    end
+    local lines = {}
+    local buf = {}
+    local buf_w = 0
+    local i = 1
+    local L = #text
+    local line_count = 0
+    while i <= L do
+        local step = utf8_step(text, i)
+        local ch = text:sub(i, i + step - 1)
+        if ch == "\n" then
+            lines[#lines + 1] = table.concat(buf)
+            buf = {}
+            buf_w = 0
+            line_count = line_count + 1
+            if max_lines and line_count >= max_lines then
+                return table.concat(lines, "\n"), line_count
+            end
+        else
+            local cw = select(1, ctx.get_text_size(ch))
+            if buf_w + cw > max_w and #buf > 0 then
+                lines[#lines + 1] = table.concat(buf)
+                buf = { ch }
+                buf_w = cw
+                line_count = line_count + 1
+                if max_lines and line_count >= max_lines then
+                    -- 最后一行加省略号
+                    if i < L then
+                        buf[#buf + 1] = "…"
+                    end
+                    lines[#lines + 1] = table.concat(buf)
+                    return table.concat(lines, "\n"), line_count
+                end
+            else
+                buf[#buf + 1] = ch
+                buf_w = buf_w + cw
+            end
+        end
+        i = i + step
+    end
+    if #buf > 0 then
+        lines[#lines + 1] = table.concat(buf)
+        line_count = line_count + 1
+    end
+    return table.concat(lines, "\n"), line_count
 end
 
 function M.new(ctx)
@@ -55,11 +142,20 @@ function Toast:_ensure_canvas(w, h, style)
     return self.canvas
 end
 
-function Toast:_compute_size(text, style)
+-- 处理文本：截断 + 换行。返回 (prepared_text, w, h)
+function Toast:_prepare(text, style)
+    local max_w = math.floor(self.ctx.scr_w * MAX_LINE_W_RATIO)
+
+    -- 1. 字符数硬截断
+    text = utf8_truncate(text, MAX_CHARS)
+
+    -- 2. 自动换行
+    text, _ = wrap_text(self.ctx, text, max_w, MAX_LINES)
+
+    -- 3. 尺寸
     local tw, th = self.ctx.get_text_size(text)
     local pad_l = PAD_X + (style.accent and ACCENT_W or 0)
-    return tw + pad_l + PAD_X,
-           th + PAD_Y * 2
+    return text, tw + pad_l + PAD_X, th + PAD_Y * 2
 end
 
 function Toast:show(text, opts)
@@ -67,16 +163,15 @@ function Toast:show(text, opts)
     opts = opts or {}
     local style = resolve_style(opts.style)
 
-    local bw, bh = self:_compute_size(text, style)
+    local prepared, bw, bh = self:_prepare(text, style)
     local canvas = self:_ensure_canvas(bw, bh, style)
 
-    self.text     = text
+    self.text     = prepared
     self.style    = style
     self.w, self.h = bw, bh
     self.deadline = opts.duration or DEFAULT_DURATION
     self.anchor   = opts.anchor
 
-    -- initial position
     local tx, ty
     if self.anchor then
         tx, ty = self.anchor({ w = bw, h = bh })
@@ -87,8 +182,6 @@ function Toast:show(text, opts)
     canvas:move(math.floor(tx), math.floor(ty))
     self.x, self.y = tx, ty
 
-    -- ★ FIX: map the window BEFORE painting, otherwise the first
-    -- frame is blank and needs a second trigger.
     canvas:show()
     self:_redraw()
     self.visible = true
@@ -99,9 +192,8 @@ function Toast:_redraw()
     local c, ctx = self.canvas, self.ctx
     local style = self.style
 
-    c:clear()  -- fill entire window with style.bg
+    c:clear()
 
-    -- Left accent bar (rounded for aesthetics)
     if style.accent then
         c:rrect(0, 0, ACCENT_W, c.h, ACCENT_W / 2, style.accent)
     end

@@ -175,5 +175,47 @@ function UI:divider(x, y, w, color)
     self.surface:rect(x, y, w, 1, color or self.theme.outline)
 end
 
+-- 焦点状态（UI 实例级）
+function UI:focus_input(id)      self._focus_id = id  end
+function UI:blur_input()         self._focus_id = nil end
+function UI:has_focus(id)        return self._focus_id == id end
+
+-- 渲染一个输入框，返回本次是否被点击（调用方可据此 grab 键盘）
+function UI:text_field(id, x, y, w, h, value, opts)
+    opts = opts or {}
+    local T = self.theme
+    local hover = self:hover(x, y, w, h)
+    local focused = self:has_focus(id)
+
+    local clicked = self:clicked(x, y, w, h)
+    if clicked then self._focus_id = id; focused = true end
+
+    local bg = focused and T.surface_hi
+               or (hover and T.surface_hover or T.surface)
+    local r = opts.radius or math.floor(h / 2)
+    self.surface:rrect(x, y, w, h, r, bg)
+
+    if focused then
+        -- 简单两条边模拟 outline
+        self.surface:rect(x + r, y, w - 2 * r, 1, T.primary)
+        self.surface:rect(x + r, y + h - 1, w - 2 * r, 1, T.primary)
+    end
+
+    local lh = self.ctx.get_primary_line_height()
+    local ty = y + math.floor((h - lh) / 2)
+    local text = value or ""
+    local fg
+    if text == "" and opts.placeholder then
+        text = opts.placeholder
+        fg = T.outline
+    else
+        fg = focused and T.on_surface or T.on_var
+    end
+    if focused then text = text .. "▏" end
+
+    self.surface:text(x + 12, ty, text, fg)
+    return clicked
+end
+
 return M
 
