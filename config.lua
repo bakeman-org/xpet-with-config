@@ -122,6 +122,11 @@ return {
       key = 'c',
       action = 'toggle_color_picker',
     },
+       {
+      mod = 'ctrl+alt',
+      key = 'd',
+      action = 'hide_all_windows',
+    },
   },
   plugins = {
     'keybinds_help',
@@ -133,6 +138,8 @@ return {
     'clip_hist',
     'launcher',
     'color_picker',
+        'hide_all',        -- ← 新增
+
   },
 
   pomodoro = {
@@ -145,8 +152,10 @@ return {
   },
 
   launcher = {
-    pos = 'top',        -- dmenu 风格：贴顶；想居中就删掉这行（回落到 ui.pos）
+    pos = 'top', -- dmenu 风格：贴顶；想居中就删掉这行（回落到 ui.pos）
     anim = 'slide_down',
+    use_dmenu_path = true, -- ← 新增；设为 false 就退回旧行为（只用 entries）
+
     entries = {
       { name = '终端', cmd = 'alacritty' },
       { name = '文件管理器', cmd = 'pcmanfm' },

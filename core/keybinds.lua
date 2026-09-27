@@ -23,6 +23,8 @@ end
 function M.grab_root_key(X11, dpy, root, bit, code, mask)
   for _, extra in ipairs(LOCK_VARIANTS) do
     X11.XGrabKey(dpy, code, bit.bor(mask, extra), root, 0, 1, 1)
+    -- 加个 XSync 让错误立即浮出来，方便定位
+    X11.XSync(dpy, 0)
   end
   X11.XFlush(dpy)
 end

@@ -1,3 +1,6 @@
+-- xpet.lua
+-- 主入口：初始化 X11 / 字体 / 输入法 / 宠物 / 插件 / 快捷键，进入事件循环
+
 local SCRIPT_DIR = (arg[0] or 'xpet.lua'):match('^(.*)/[^/]*$') or '.'
 if SCRIPT_DIR == '' then
   SCRIPT_DIR = '.'
@@ -54,6 +57,7 @@ if ft_ctx == nil then
 end
 log('font: %s @ %d', config.font_path, config.font_size or 24)
 
+-- ─── XIM 输入法 ─────────────────────────────────────────
 local xmod = os.getenv('XMODIFIERS')
 if not xmod or xmod == '' then
   log('*** WARNING: XMODIFIERS is not set. ***')
@@ -65,7 +69,6 @@ else
   log('XMODIFIERS=%s', xmod)
 end
 
--- ─── XIM 输入法 ─────────────────────────────────────────
 local XIM_PREEDIT_NOTHING = 0x0008
 local XIM_STATUS_NOTHING = 0x0400
 local XIM_STYLE = bit.bor(XIM_PREEDIT_NOTHING, XIM_STATUS_NOTHING)
@@ -79,6 +82,7 @@ else
   log('XIM opened OK (style=PreeditNothing|StatusNothing)')
 end
 
+-- ─── 事件总线 & 全局 ctx ─────────────────────────────────
 local listeners = {}
 local actions = {}
 
@@ -178,6 +182,7 @@ function ctx.xim_destroy_ic(ic)
   end
 end
 
+-- ─── 音频子系统 ─────────────────────────────────────────
 if AUD then
   local rc = AUD.audio_init()
   if rc ~= 0 then
@@ -187,6 +192,7 @@ if AUD then
   end
 end
 
+-- ─── 宠物 ───────────────────────────────────────────────
 local pet = pet_mod.new(ctx)
 pet:create_window()
 ctx.pet = pet
@@ -195,6 +201,7 @@ ctx.show_bubble = function(text, opts)
   pet:show_bubble(text, opts)
 end
 
+-- ─── 内置 action ────────────────────────────────────────
 actions.quit = function()
   plugin_mgr.shutdown()
   ctx.emit('shutdown')
@@ -213,18 +220,19 @@ end
 actions.toggle_chase = function()
   pet:toggle_chase()
 end
+
 actions.toggle_freeze = function()
   pet:toggle_freeze()
 end
+
 actions.say_hello = function()
   pet:show_bubble('hello world 😀🎉')
-  -- TODO: find a hello world audio to play, haha
-  -- pet:play_audio()
-  -- pet:play_behavior()
 end
 
-plugin_mgr.load_all(config.plugins or {}, ctx)
-
+-- ─── 快捷键注册 ─────────────────────────────────────────
+-- 关键顺序：先建 keybinds 并挂到 ctx.keybinds，
+-- 再加载插件。这样插件在 init 阶段（或运行时的 on_ev）能通过 ctx.keybinds
+-- 查询 / 透传全局快捷键（见 core/panel.lua on_ev 的 KEY_PRESS 分支）。
 local keybinds = keybinds_mod.new({
   X11 = X11,
   bit = bit,
@@ -233,7 +241,12 @@ local keybinds = keybinds_mod.new({
   log = log,
 })
 keybinds.rebuild(config)
+ctx.keybinds = keybinds
 
+-- ─── 插件加载 ───────────────────────────────────────────
+plugin_mgr.load_all(config.plugins or {}, ctx)
+
+-- ─── 热重载 ─────────────────────────────────────────────
 local function do_hot_reload(silent)
   local ok, newcfg = pcall(load_config)
   if not ok then
@@ -273,7 +286,7 @@ local function do_hot_reload(silent)
   end
 
   local okp, perr = pcall(function()
-    pet:apply_config(config) -- pet_speed / pet_frozen 等轻量字段
+    pet:apply_config(config)
     if pet_changed then
       pet:reload_animations(config)
     end
@@ -294,6 +307,7 @@ local function do_hot_reload(silent)
   if not okk then
     log('hot reload failed (keybinds): %s', tostring(kerr))
   end
+  ctx.keybinds = keybinds
 
   if not silent then
     ctx.show_bubble('hot reload done 🚀')
@@ -316,6 +330,7 @@ actions.toggle_auto_reload = function()
   end
 end
 
+-- ─── 事件循环 ───────────────────────────────────────────
 local ev = ffi.new('XEvent')
 local FRAME_MS = 16
 local WATCH_INTERVAL_MS = 800
@@ -329,7 +344,8 @@ int clock_gettime(int clk, xp_timespec *tp);
 local ts = ffi.new('xp_timespec[1]')
 local function now_ms()
   libc.clock_gettime(1, ts) -- CLOCK_MONOTONIC
-  -- tonumber: cdata long 参与算术会传染成 cdata，下游 math.ceil 报 "number expected, got cdata"
+  -- tonumber: cdata long 参与算术会传染成 cdata，
+  -- 下游 math.ceil 会报 "number expected, got cdata"
   return tonumber(ts[0].tv_sec) * 1000 + tonumber(ts[0].tv_nsec) / 1e6
 end
 

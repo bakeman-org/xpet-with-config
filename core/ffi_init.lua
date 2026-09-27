@@ -139,6 +139,51 @@ typedef struct {
   int n_data_colors;
 } XpmAttributes;
 
+typedef struct _XScreen Screen;
+typedef unsigned long Atom;
+typedef unsigned long Colormap;
+
+typedef struct {
+  int x, y;
+  int width, height;
+  int border_width;
+  int depth;
+  void *visual;
+  Window root;
+  int class;
+  int bit_gravity;
+  int win_gravity;
+  int backing_store;
+  unsigned long backing_planes;
+  unsigned long backing_pixel;
+  Bool save_under;
+  Colormap colormap;
+  Bool map_installed;
+  int map_state;
+  long all_event_masks;
+  long your_event_mask;
+  long do_not_propagate_mask;
+  Bool override_redirect;
+  Screen *screen;
+} XWindowAttributes;
+
+Atom XInternAtom(Display *display, const char *atom_name, Bool only_if_exists);
+int XChangeProperty(Display *display, Window w, Atom property, Atom type,
+                    int format, int mode, const unsigned char *data,
+                    int nelements);
+int XGetWindowProperty(Display *display, Window w, Atom property,
+                       long long_offset, long long_length, Bool delete,
+                       Atom req_type, Atom *actual_type_return,
+                       int *actual_format_return, unsigned long *nitems_return,
+                       unsigned long *bytes_after_return,
+                       unsigned char **prop_return);
+int XIconifyWindow(Display *display, Window w, int screen_number);
+int XQueryTree(Display *display, Window w, Window *root_return,
+               Window *parent_return, Window **children_return,
+               unsigned int *nchildren_return);
+int XGetWindowAttributes(Display *display, Window w, XWindowAttributes *attrs);
+int XFree(void *data);
+
 Display *XOpenDisplay(const char *display_name);
 int XCloseDisplay(Display *display);
 int XDefaultScreen(Display *display);

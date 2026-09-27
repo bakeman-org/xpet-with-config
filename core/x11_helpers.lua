@@ -17,6 +17,10 @@ function M.open(ffi_init)
   local scr_h = X11.XDisplayHeight(dpy, screen)
 
   local err_handler = ffi.cast('int (*)(Display*, XErrorEvent*)', function(_, e)
+    -- 忽略 keybind 被别的客户端抢占产生的 BadAccess
+    -- if e.error_code == 10 and e.request_code == 33 then
+    --   return 0
+    -- end
     io.stderr:write(
       string.format(
         '[xpet] X error: code=%d req=%d.%d resource=0x%x\n',

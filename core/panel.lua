@@ -1,3 +1,17 @@
+-- core/panel.lua
+-- 面板基类：统一处理窗口 / 画布 / UI / 输入框 / 事件 / 动画
+--
+-- 关键职责：
+--   1. 创建 X11 窗口 + Surface + UI 三者并绑定
+--   2. 管理 show/hide 的滑入滑出动画
+--   3. 把 X 事件按类型分发给 opts.draw / opts.on_key / opts.on_press 等回调
+--   4. 输入框聚焦时 grab 键盘，同时透传全局快捷键（见 on_ev 的 KEY_PRESS 分支）
+--
+-- 面板注册表：
+--   所有 Panel 实例会把自己注册到 ctx._panels，
+--   供「一键收起所有面板」这类批量操作使用（plugins/hide_all.lua）。
+--   Panel:destroy() 会把自己从注册表移除。
+
 local M = {}
 local X11C = require('core.x11_const')
 local Surface = require('core.surface')
@@ -7,6 +21,7 @@ local TextInput = require('core.text_input')
 local Panel = {}
 Panel.__index = Panel
 
+-- 把 X 键名（如 'space'）转成该键盘布局下的 keycode
 local function keycode_of(ctx, name)
   return ctx.X11.XKeysymToKeycode(ctx.dpy, ctx.X11.XStringToKeysym(name))
 end
@@ -105,6 +120,10 @@ function M.new(ctx, opts)
     self._code_open = keycode_of(ctx, opts.open_key)
   end
 
+  -- 注册到全局面板表：plugins/hide_all.lua 遍历这张表来做「一键收起」
+  ctx._panels = ctx._panels or {}
+  ctx._panels[#ctx._panels + 1] = self
+
   return self
 end
 
@@ -125,6 +144,13 @@ function Panel:show()
   end
   self:draw()
   self.canvas:show()
+
+  -- focus_on_show：窗口 map 之后再抓键盘。
+  -- 否则 XGrabKeyboard 对未 viewable 的窗口调用会拿到 GrabNotViewable，
+  -- 静默失败，输入框永远收不到键。
+  if self.opts.focus_on_show and self.input and not self.kbd_grabbed then
+    self:focus_input()
+  end
 end
 
 function Panel:hide()
@@ -155,7 +181,12 @@ function Panel:focus_input()
   if not self.kbd_grabbed then
     local X, dpy = self.ctx.X11, self.ctx.dpy
     self.canvas:enable_keyboard(true)
-    X.XGrabKeyboard(dpy, self.canvas.win, 0, 1, 1, 0)
+    -- 等 MapWindow / SelectInput 都处理完，保证窗口已经 viewable
+    X.XSync(dpy, 0)
+    local rc = X.XGrabKeyboard(dpy, self.canvas.win, 0, 1, 1, 0)
+    if rc ~= 0 then
+      self.ctx.log('XGrabKeyboard failed: %d (win=%d)', rc, tonumber(self.canvas.win))
+    end
     if self.ic then
       X.XSetICFocus(self.ic)
     end
@@ -244,20 +275,44 @@ function Panel:on_ev(t, ev)
     end
     local ctrl = bit.band(ev.xkey.state, C.CONTROL_MASK) ~= 0
     local shift = bit.band(ev.xkey.state, C.SHIFT_MASK) ~= 0
+    -- Ctrl+Space 切 fcitx5 中英文（面板 grab 键盘时仍然有效）
     if self._code_space and ev.xkey.keycode == self._code_space and ctrl then
       os.execute('fcitx5-remote -t >/dev/null 2>&1 &')
       return true
     end
     if self.kbd_grabbed then
       local text, sym, status = self:lookup_string(ev)
+      -- status == 1 表示被输入法吃掉（合成中），不派发
       if status == 1 then
         self:draw()
         return true
       end
+
+      -- ① 面板自定义按键回调
+      --    典型用途：launcher 用 Ctrl+Alt+E 把自己藏起来；sysmon 用 Ctrl+K 杀进程
       if self.opts.on_key and self.opts.on_key(self, sym, ctrl, shift, text, ev.xkey.state) then
         self:draw()
         return true
       end
+
+      -- ② 全局 keybind 透传
+      --    面板 grab 键盘期间默认收不到 root 上的快捷键（因为 grab 优先），
+      --    所以这里主动查一下 config.keybinds，命中就先 blur_input 释放 grab
+      --    再执行 action。这样「launcher 打开着也能用 Ctrl+Alt+D 一键收起所有面板」。
+      local kb = self.ctx.keybinds
+      if kb then
+        local action = kb.lookup(ev.xkey.keycode, ev.xkey.state)
+        if action and self.ctx.actions[action] then
+          self:blur_input()
+          local ok, err = pcall(self.ctx.actions[action])
+          if not ok then
+            self.ctx.log('action error (from panel grab): %s', tostring(err))
+          end
+          return true
+        end
+      end
+
+      -- ③ 普通文本输入
       self.input:on_key(sym, ctrl, shift, text)
       self.input:_ensure_cursor_visible()
       self:draw()
@@ -282,6 +337,7 @@ function Panel:on_ev(t, ev)
     return false
   end
 
+  -- 鼠标事件过滤：只处理落在自己窗口内的
   if t == C.BUTTON_PRESS or t == C.BUTTON_RELEASE then
     if ev.xbutton.window ~= self.canvas.win then
       return false
@@ -317,6 +373,7 @@ function Panel:on_ev(t, ev)
       self:draw()
       return true
     end
+    -- 点空白处：如果输入框是聚焦的，顺手 blur
     if self.input and self.kbd_grabbed then
       self:blur_input()
     end
@@ -344,6 +401,7 @@ function Panel:tick(dt)
   if self.input then
     self.input:tick(dt)
   end
+  -- 位置插值：指数衰减，接近目标时吸附
   if self.anim_x ~= self.target_x or self.anim_y ~= self.target_y then
     local k = 1 - math.exp(-dt / 60)
     local dx = self.target_x - self.anim_x
@@ -372,6 +430,17 @@ function Panel:tick(dt)
 end
 
 function Panel:destroy()
+  -- 反注册：从全局面板表中移除自己
+  local list = self.ctx._panels
+  if list then
+    for i = #list, 1, -1 do
+      if list[i] == self then
+        table.remove(list, i)
+        break
+      end
+    end
+  end
+
   self:blur_input()
   if self.ic and self.ctx.xim_destroy_ic then
     self.ctx.xim_destroy_ic(self.ic)

@@ -4,7 +4,6 @@ local Panel = require("core.panel")
 local Util = require("core.util")
 
 local log = Util.logger("launcher")
-local keybind_hint = Util.keybind_hint
 local truncate = Util.truncate
 
 local THEME = {
@@ -29,19 +28,59 @@ local XK_e = 0x0065
 local XK_E = 0x0045
 local MOD1_MASK = 0x0008 -- alt
 
-function M.init(ctx)
-    M.ctx = ctx
-    local cfg = ctx.config.launcher or {}
-    M.entries = {}
-    for _, e in ipairs(cfg.entries or {}) do
-        if e.cmd and e.cmd ~= "" then
-            M.entries[#M.entries + 1] = { name = e.name or e.cmd, cmd = e.cmd }
+-- ── dmenu_path 集成 ───────────────────────────────────────
+-- dmenu_path 是 suckless dmenu 附带的脚本：扫 $PATH 并缓存到
+-- ~/.cache/dmenu_run，输出所有可执行文件名（相对路径，不带目录）。
+-- 每秒 mtime 检查一次，命中缓存时毫秒级返回。
+local function load_dmenu_path()
+    local out = {}
+    local p = io.popen('dmenu_path 2>/dev/null')
+    if not p then
+        return out
+    end
+    for line in p:lines() do
+        local s = line:match('^%s*(.-)%s*$')
+        if s ~= '' then
+            out[#out + 1] = s
         end
     end
-    M.filtered = M.entries
-    M.sel = #M.filtered > 0 and 1 or 0
+    p:close()
+    return out
+end
+
+-- 合并 config.launcher.entries（显式别名/图标名优先）+ dmenu_path 条目
+function M.reload_entries()
+    local cfg = M.ctx.config.launcher or {}
+    local entries, seen = {}, {}
+
+    for _, e in ipairs(cfg.entries or {}) do
+        if e.cmd and e.cmd ~= "" then
+            local name = e.name or e.cmd
+            entries[#entries + 1] = { name = name, cmd = e.cmd }
+            seen[name] = true
+        end
+    end
+
+    -- config.launcher.use_dmenu_path = false 可关闭 dmenu_path 集成
+    if cfg.use_dmenu_path ~= false then
+        for _, cmd in ipairs(load_dmenu_path()) do
+            if not seen[cmd] then
+                entries[#entries + 1] = { name = cmd, cmd = cmd }
+                seen[cmd] = true
+            end
+        end
+    end
+
+    M.entries = entries
+    M.filtered = entries
+    M.sel = #entries > 0 and 1 or 0
     M.scroll = 0
+end
+
+function M.init(ctx)
+    M.ctx = ctx
     M.query = ""
+    M.reload_entries()
 
     local lh = ctx.get_primary_line_height()
     M.LH = lh
@@ -56,11 +95,17 @@ function M.init(ctx)
         w = M.W,
         h = M.H,
         theme = THEME,
+        -- 关键：面板 show 完之后自动 focus 输入框，
+        -- 依赖 Panel:show() 在 canvas:show() 之后调用 focus_input()
+        focus_on_show = true,
         draw = function(p) M.draw(p) end,
         on_show = function(p)
+            -- 每次显示都重新扫描 PATH：用户可能刚装了新软件
+            M.reload_entries()
+            M.query = ""
+            if p.input then p.input:set_value("") end
             M.sel = #M.filtered > 0 and 1 or 0
             M.scroll = 0
-            p:focus_input()
         end,
         input = {
             placeholder = "搜索应用，或直接输入命令回车执行",
@@ -72,7 +117,7 @@ function M.init(ctx)
             on_cancel = function() M.panel:hide() end,
         },
         on_key = function(p, sym, ctrl, shift, text, state)
-            -- 键盘被面板 grab 期间全局快捷键收不到，Ctrl+Alt+E 在这里处理隐藏
+            -- 键盘被面板 grab 期间全局快捷键收不到，Ctrl+Alt+E 在这里隐藏
             local alt = state and bit.band(state, MOD1_MASK) ~= 0
             if ctrl and alt and (sym == XK_e or sym == XK_E) then
                 p:hide()

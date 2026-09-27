@@ -146,24 +146,29 @@ return {
   --         V剪贴板 E启动器 C取色器
   -- ============================================================
   keybinds_help = { pos = 'center', anim = 'slide_down' },
-  music_player  = { pos = 'top', anim = 'slide_down' },
-  sysmon        = { pos = 'top_right', anim = 'slide_down' },
-  sysinfo       = { pos = 'left', anim = 'slide_right' },   -- 从左侧滑入
-  color_picker  = { pos = 'bottom_right', anim = 'slide_up' },
+  music_player = { pos = 'top', anim = 'slide_down' },
+  sysmon = { pos = 'top_right', anim = 'slide_down' },
+  sysinfo = { pos = 'left', anim = 'slide_right' }, -- 从左侧滑入
+  color_picker = { pos = 'bottom_right', anim = 'slide_up' },
 
   pomodoro = {
-    pos = 'bottom_left', anim = 'slide_up', -- 从底部弹出
+    pos = 'bottom_left',
+    anim = 'slide_up', -- 从底部弹出
     work_min = 25,
     break_min = 5,
   },
 
   clip_hist = {
-    pos = 'bottom', anim = 'slide_up',
+    pos = 'bottom',
+    anim = 'slide_up',
     max_items = 30,
   },
 
   launcher = {
-    pos = 'top', anim = 'slide_down', -- dmenu 风格：贴顶
+    pos = 'top',
+    anim = 'slide_down', -- dmenu 风格：贴顶
+    use_dmenu_path = true, -- ← 新增；设为 false 就退回旧行为（只用 entries）
+
     entries = {
       { name = '终端', cmd = 'alacritty' },
       { name = '文件管理器', cmd = 'pcmanfm' },
@@ -174,7 +179,8 @@ return {
   },
 
   weather = {
-    pos = 'right', anim = 'slide_left', -- 从右侧滑入
+    pos = 'right',
+    anim = 'slide_left', -- 从右侧滑入
     units = 'c',
     refresh_sec = 300, -- 300 seconds
 

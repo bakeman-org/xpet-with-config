@@ -11,3 +11,7 @@ probes/
 
 .trae/
 .github/
+*.tar.gz
+tl-*linux*/
+.tlconfig.lua
+gen.sh
