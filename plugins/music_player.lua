@@ -159,9 +159,9 @@ function M.init(ctx)
   M.search_query = ''
 
   M.panel = Panel.new(ctx, {
+    name = 'music_player',
     w = M.W,
     h = M.H,
-    y_shown = 0,
     theme = THEME,
     open_key = 'f',
     draw = function(p)

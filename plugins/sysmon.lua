@@ -237,8 +237,8 @@ function M.init(ctx)
                 ctx.X11.XStringToKeysym("k"))
 
     M.panel = Panel.new(ctx, {
+        name = 'sysmon',
         w = M.W, h = M.H,
-        y_shown = M.Y_SHOWN,
         theme = THEME,
         open_key = "f",
         draw = function(p) M.draw(p) end,

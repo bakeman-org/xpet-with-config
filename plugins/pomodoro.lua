@@ -61,6 +61,7 @@ function M.init(ctx)
         + M.CHIP_H + 14 + M.BTN_H + 44
 
     M.panel = Panel.new(ctx, {
+        name = 'pomodoro',
         w = M.W,
         h = M.H,
         theme = THEME,
@@ -80,6 +81,13 @@ function M.on_tick(dt)
         M.remaining = M.remaining - dt
         if M.remaining <= 0 then
             M.finish()
+            return
+        end
+        -- 每变化一秒刷新一次显示（之前只在鼠标事件时重绘，倒计时看着不动）
+        local sec = math.ceil(M.remaining / 1000)
+        if sec ~= M.last_sec and M.panel.visible then
+            M.last_sec = sec
+            M.panel:draw()
         end
     end
 end

@@ -140,6 +140,7 @@ function M.init(ctx)
     M.refresh_acc = 0
 
     M.panel = Panel.new(ctx, {
+        name = 'sysinfo',
         w = M.W, h = M.H,
         theme = THEME,
         draw = function(p) M.draw(p) end,

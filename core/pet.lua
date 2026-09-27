@@ -165,9 +165,28 @@ function M.new(ctx)
   end
 
   function pet:reload_animations(new_config)
+    local oldcfg = config
     config = new_config
+    -- 先解码新素材，全部成功才替换；失败保留旧素材旧窗口，绝不让热加载带崩进程
+    local ok, anim = pcall(function()
+      local a = PetSource.load(ctx, config)
+      if not a or not a.idle or #a.idle == 0 then
+        error('no frames loaded')
+      end
+      return a
+    end)
+    if not ok then
+      log('pet reload failed, keeping old assets: %s', tostring(anim))
+      config = oldcfg
+      return false
+    end
 
-    free_animations()
+    local old = pet.animations
+    pet.animations = anim
+    pet.state = 'idle'
+    pet.frame = 1
+    pet.frame_time = 0
+    pet.behavior.o.speed = config.pet_speed or 2
 
     if pet.win then
       X11.XDestroyWindow(dpy, pet.win)
@@ -177,19 +196,40 @@ function M.new(ctx)
       X11.XFreeGC(dpy, pet.gc)
       pet.gc = nil
     end
+    local seen = {}
+    for _, frames in pairs(old) do
+      if not seen[frames] then
+        seen[frames] = true
+        for _, fr in ipairs(frames) do
+          X11.XFreePixmap(dpy, fr.pix)
+          X11.XFreePixmap(dpy, fr.mask)
+        end
+      end
+    end
 
-    pet:load_animations()
-
-    pet.state = 'idle'
-    pet.frame = 1
-    pet.frame_time = 0
-    pet.behavior.o.speed = config.pet_speed or 2
     pet:create_window()
     pet.behavior:reset()
+    log('pet reloaded (scale=%s)', tostring(config.scale_factor))
+    return true
+  end
+
+  -- 轻量配置应用：不重建素材（pet_speed / pet_frozen），热加载与启动共用
+  function pet:apply_config(cfg)
+    config = cfg
+    pet.behavior.o.speed = cfg.pet_speed or 2
+    local b = pet.behavior
+    if cfg.pet_frozen ~= false then -- 默认冻结，显式 false 才自由活动
+      if b.mode ~= 'frozen' then
+        b.prev_mode = b.mode
+        b:set_mode('frozen')
+      end
+    elseif b.mode == 'frozen' then
+      b:set_mode(b.prev_mode or 'wander')
+    end
   end
 
   function pet:set_config(new_config)
-    config = new_config
+    pet:apply_config(new_config)
   end
 
   function pet:toggle_chase()
@@ -313,6 +353,7 @@ function M.new(ctx)
 
   pet:load_animations()
   pet.behavior:reset()
+  pet:apply_config(config) -- pet_frozen 默认冻结
   return pet
 end
 

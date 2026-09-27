@@ -64,7 +64,8 @@ function M.reload(ctx, new_list)
 end
 
 function M.watch_paths(ctx)
-  local paths = { ctx.SCRIPT_DIR .. '/config.lua' }
+  -- 监听实际使用的配置文件（可能是 config-png2.lua 等），而非写死 config.lua
+  local paths = { ctx.config_path or (ctx.SCRIPT_DIR .. '/config.lua') }
   for _, name in ipairs(M.plugin_list) do
     paths[#paths + 1] = ctx.SCRIPT_DIR .. '/plugins/' .. name .. '.lua'
   end

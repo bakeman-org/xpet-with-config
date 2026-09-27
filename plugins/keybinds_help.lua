@@ -37,6 +37,15 @@ local DESCR = {
     toggle_color_picker  = "屏幕取色器",
 }
 
+-- 分组展示：组内按 config.keybinds 的声明顺序排列，未归类的进「其他」
+local GROUPS = {
+    { title = "宠物",  actions = { "toggle_chase", "toggle_freeze", "say_hello" } },
+    { title = "面板",  actions = { "show_keybinds_help", "toggle_music_player", "toggle_weather",
+                                   "toggle_sysinfo", "toggle_sysmon", "toggle_pomodoro",
+                                   "toggle_clip_hist", "toggle_launcher", "toggle_color_picker" } },
+    { title = "系统",  actions = { "hot_reload", "toggle_auto_reload", "quit" } },
+}
+
 local L_TITLE = "快捷键帮助"
 local L_CLOSE = "×"
 
@@ -55,19 +64,54 @@ function M.init(ctx)
     M.LH = lh
     M.W = 420
     M.APPBAR = lh + 30
-    M.ROW_H = lh + 14
+    M.ROW_H = lh + 12
+    M.SEC_H = lh + 14
+    M.GAP = 10
     M.PAD = 24
+    M.COMBO_COL = 180
 
-    M.rows = {}
+    -- action -> kb 索引
+    local by_action = {}
+    local seen = {}
     for _, kb in ipairs(ctx.config.keybinds or {}) do
-        M.rows[#M.rows + 1] = {
-            combo = combo_of(kb),
-            desc = DESCR[kb.action] or kb.action,
-        }
+        if not by_action[kb.action] then
+            by_action[kb.action] = kb
+        end
     end
-    M.H = M.APPBAR + 10 + #M.rows * M.ROW_H + 14
+
+    M.groups = {}
+    local used = {}
+    local H_content = 0
+    for _, g in ipairs(GROUPS) do
+        local rows = {}
+        for _, act in ipairs(g.actions) do
+            local kb = by_action[act]
+            if kb and not used[act] then
+                used[act] = true
+                rows[#rows + 1] = { combo = combo_of(kb), desc = DESCR[act] or act }
+            end
+        end
+        if #rows > 0 then
+            M.groups[#M.groups + 1] = { title = g.title, rows = rows }
+            H_content = H_content + M.SEC_H + #rows * M.ROW_H + M.GAP
+        end
+    end
+    local rest = {}
+    for _, kb in ipairs(ctx.config.keybinds or {}) do
+        if not used[kb.action] then
+            used[kb.action] = true
+            rest[#rest + 1] = { combo = combo_of(kb), desc = DESCR[kb.action] or kb.action }
+        end
+    end
+    if #rest > 0 then
+        M.groups[#M.groups + 1] = { title = "其他", rows = rest }
+        H_content = H_content + M.SEC_H + #rest * M.ROW_H + M.GAP
+    end
+
+    M.H = M.APPBAR + 12 + H_content + 14
 
     M.panel = Panel.new(ctx, {
+        name = 'keybinds_help',
         w = M.W,
         h = M.H,
         theme = THEME,
@@ -77,7 +121,7 @@ function M.init(ctx)
     ctx.register_action("show_keybinds_help", function() M.panel:toggle() end)
     ctx.on("tick", function(dt) M.panel:tick(dt) end)
     ctx.on("xevent", function(t, ev) return M.on_ev(t, ev) end)
-    log("ready: %d keybinds", #M.rows)
+    log("ready: %d keybinds", #(ctx.config.keybinds or {}))
 end
 
 function M.on_ev(t, ev)
@@ -109,15 +153,23 @@ function M.draw(p)
     end
     s:rect(0, M.APPBAR - 1, W, 1, T.outline)
 
-    local y = M.APPBAR + 10
-    for i, row in ipairs(M.rows) do
-        local hover = ui:hover(0, y - 4, W, M.ROW_H)
-        if hover then
-            s:rect(8, y - 4, W - 16, M.ROW_H, T.surface_hi)
+    local y = M.APPBAR + 12
+    for _, g in ipairs(M.groups) do
+        -- 分组标题 + 分隔线
+        s:text(M.PAD, y, g.title, T.primary)
+        s:rect(M.PAD + tw(g.title) + 12, y + math.floor(lh / 2),
+               W - M.PAD * 2 - tw(g.title) - 12, 1, T.outline)
+        y = y + M.SEC_H
+        for _, row in ipairs(g.rows) do
+            local hover = ui:hover(8, y - 4, W - 16, M.ROW_H)
+            if hover then
+                s:rrect(8, y - 4, W - 16, M.ROW_H, 8, T.surface_hi)
+            end
+            s:text(M.PAD, y, row.combo, T.primary_hi)
+            s:text(M.PAD + M.COMBO_COL, y, row.desc, T.on_surface)
+            y = y + M.ROW_H
         end
-        s:text(M.PAD, y, row.combo, i % 2 == 0 and T.primary_hi or T.primary)
-        s:text(M.PAD + 170, y, row.desc, T.on_surface)
-        y = y + M.ROW_H
+        y = y + M.GAP
     end
 end
 

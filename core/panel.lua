@@ -11,29 +11,82 @@ local function keycode_of(ctx, name)
   return ctx.X11.XKeysymToKeycode(ctx.dpy, ctx.X11.XStringToKeysym(name))
 end
 
+-- 计算显示位置（sx,sy）与隐藏位置（hx,hy），每次 show 时重算以支持热加载
+-- pos: center/top/bottom/left/right/top_left/top_right/bottom_left/bottom_right
+-- anim: auto/slide_down/slide_up/slide_left/slide_right/none
+function Panel:layout()
+  local ctx, w, h = self.ctx, self.w, self.h
+  local ui_cfg = ctx.config.ui or {}
+  -- 优先级：opts.pos/anim > config[opts.name].pos/anim > config.ui > 默认
+  local pcfg = self.opts.name and ctx.config[self.opts.name] or {}
+  local pos = self.opts.pos or pcfg.pos or ui_cfg.pos or 'center'
+  local cx = math.floor((ctx.scr_w - w) / 2)
+  local cy = math.floor((ctx.scr_h - h) / 2)
+  local sx, sy
+  if pos == 'top' then
+    sx, sy = cx, 0
+  elseif pos == 'bottom' then
+    sx, sy = cx, ctx.scr_h - h
+  elseif pos == 'left' then
+    sx, sy = 0, cy
+  elseif pos == 'right' then
+    sx, sy = ctx.scr_w - w, cy
+  elseif pos == 'top_left' then
+    sx, sy = 0, 0
+  elseif pos == 'top_right' then
+    sx, sy = ctx.scr_w - w, 0
+  elseif pos == 'bottom_left' then
+    sx, sy = 0, ctx.scr_h - h
+  elseif pos == 'bottom_right' then
+    sx, sy = ctx.scr_w - w, ctx.scr_h - h
+  else
+    sx, sy = cx, cy
+  end
+  sx = self.opts.x or math.max(0, sx)
+  sy = self.opts.y_shown or math.max(0, sy)
+  if sx > ctx.scr_w - w then
+    sx = math.max(0, ctx.scr_w - w)
+  end
+  if sy > ctx.scr_h - h then
+    sy = math.max(0, ctx.scr_h - h)
+  end
+
+  local anim = self.opts.anim or pcfg.anim or ui_cfg.anim or 'auto'
+  if anim == 'auto' then
+    anim = (pos == 'bottom' or pos == 'bottom_left' or pos == 'bottom_right')
+      and 'slide_up' or 'slide_down'
+  end
+  local hx, hy = sx, sy
+  if anim == 'slide_down' then
+    hy = -h - 4
+  elseif anim == 'slide_up' then
+    hy = ctx.scr_h + 4
+  elseif anim == 'slide_left' then
+    hx = ctx.scr_w + 4
+  elseif anim == 'slide_right' then
+    hx = -w - 4
+  end
+  self.anim_kind = anim
+  self.sx, self.sy, self.hx, self.hy = sx, sy, hx, hy
+end
+
 function M.new(ctx, opts)
   opts = opts or {}
   local w, h = opts.w, opts.h
-  local x = opts.x or math.floor((ctx.scr_w - w) / 2)
-  local y_shown = opts.y_shown
-  if y_shown == nil then
-    y_shown = math.floor((ctx.scr_h - h) / 2)
-  end
-  local y_hidden = opts.y_hidden or -(h + 4)
 
   local self = setmetatable({}, Panel)
   self.ctx = ctx
   self.opts = opts
-  self.x, self.w, self.h = x, w, h
-  self.y_shown, self.y_hidden = y_shown, y_hidden
+  self.w, self.h = w, h
   self.visible = false
-  self.anim_y = y_hidden
-  self.target_y = y_hidden
   self.kbd_grabbed = false
+  self:layout()
+  self.anim_x, self.anim_y = self.sx, self.sy
+  self.target_x, self.target_y = self.sx, self.sy
 
   self.canvas = ctx.create_canvas(w, h, {
-    x = x,
-    y = y_hidden,
+    x = self.sx,
+    y = self.sy,
     bg = opts.bg or (opts.theme and opts.theme.bg),
     border = opts.border or (opts.theme and opts.theme.bg),
     border_width = opts.border_width or 1,
@@ -56,23 +109,34 @@ function M.new(ctx, opts)
 end
 
 function Panel:show()
+  self:layout()
   self.visible = true
   if self.opts.on_show then
     self.opts.on_show(self)
   end
-  self.anim_y = self.y_hidden
-  self.target_y = self.y_shown
-  self.canvas:move(self.x, math.floor(self.anim_y))
+  if self.anim_kind == 'none' then
+    self.anim_x, self.anim_y = self.sx, self.sy
+    self.target_x, self.target_y = self.sx, self.sy
+    self.canvas:move(self.sx, self.sy)
+  else
+    self.anim_x, self.anim_y = self.hx, self.hy
+    self.target_x, self.target_y = self.sx, self.sy
+    self.canvas:move(self.hx, self.hy)
+  end
   self:draw()
   self.canvas:show()
 end
 
 function Panel:hide()
   self.visible = false
-  self.target_y = self.y_hidden
   self:blur_input()
   if self.opts.on_hide then
     self.opts.on_hide(self)
+  end
+  if self.anim_kind == 'none' then
+    self.canvas:hide()
+  else
+    self.target_x, self.target_y = self.hx, self.hy
   end
 end
 
@@ -190,7 +254,7 @@ function Panel:on_ev(t, ev)
         self:draw()
         return true
       end
-      if self.opts.on_key and self.opts.on_key(self, sym, ctrl, shift, text) then
+      if self.opts.on_key and self.opts.on_key(self, sym, ctrl, shift, text, ev.xkey.state) then
         self:draw()
         return true
       end
@@ -280,15 +344,24 @@ function Panel:tick(dt)
   if self.input then
     self.input:tick(dt)
   end
-  if self.anim_y ~= self.target_y then
-    local d = self.target_y - self.anim_y
-    if math.abs(d) < 1.5 then
+  if self.anim_x ~= self.target_x or self.anim_y ~= self.target_y then
+    local k = 1 - math.exp(-dt / 60)
+    local dx = self.target_x - self.anim_x
+    local dy = self.target_y - self.anim_y
+    if math.abs(dx) < 1.5 then
+      self.anim_x = self.target_x
+    else
+      self.anim_x = self.anim_x + dx * k
+    end
+    if math.abs(dy) < 1.5 then
       self.anim_y = self.target_y
     else
-      self.anim_y = self.anim_y + d * 0.3
+      self.anim_y = self.anim_y + dy * k
     end
-    self.canvas:move(self.x, math.floor(self.anim_y))
-    if self.anim_y == self.target_y and self.target_y < 0 then
+    self.canvas:move(math.floor(self.anim_x), math.floor(self.anim_y))
+    if self.anim_x == self.target_x and self.anim_y == self.target_y
+      and not self.visible then
+      -- 滑出到隐藏位完成，收起窗口
       self.canvas:hide()
       return
     end

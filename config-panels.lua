@@ -1,13 +1,22 @@
 return {
-  -- scale sugeested value range of 1-12, don't make it very big, or try it yourself
-  -- gif 画布 800x600：scale 1 = 800x600 窗口，scale 2 = 1600x1200（超过屏高，先用 1）
-  scale_factor = 1,
+  -- scale 支持任意小数（0.1 缩小 ~ 12 放大），最近邻采样
+  scale_factor = 2,
   pet_speed = 2,
   frame_duration = 200,
+  -- 启动时冻结宠物（不乱跑）；Ctrl+Alt+S 可手动切换
+  pet_frozen = true,
 
-  pet_source = 'png',
-  pet_asset_dir = 'assets/gif/1.gif', -- 单个 gif 文件；换 2.gif~7.gif 试其它动作
+  pet_source = 'xpm',
+  pet_asset_dir = 'assets/pets/bsd',
   audio_panel_dir = 'assets/music',
+
+  -- 面板默认位置与进场动画（单个面板可在 Panel opts 里覆盖）
+  -- pos: center/top/bottom/left/right/top_left/top_right/bottom_left/bottom_right
+  -- anim: auto/slide_down/slide_up/slide_left/slide_right/none
+  ui = {
+    pos = 'center',
+    anim = 'auto',
+  },
 
   font_path = '/home/etcix/.local/share/fonts/MiSans-Regular.ttf',
   font_size = 24,
@@ -126,16 +135,35 @@ return {
     'color_picker',
   },
 
+  -- ============================================================
+  -- 面板位置/进场动画调试配置
+  -- 每个面板可单独配（优先级高于上面的 ui 全局默认）：
+  --   pos  = center | top | bottom | left | right
+  --        | top_left | top_right | bottom_left | bottom_right
+  --   anim = auto | slide_down | slide_up | slide_left | slide_right | none
+  -- 改完保存自动热加载；面板下次打开即生效（Panel 每次 show 重算布局）
+  -- 快捷键：H帮助 M音乐 W天气 I系统信息 T系统监视 B番茄钟
+  --         V剪贴板 E启动器 C取色器
+  -- ============================================================
+  keybinds_help = { pos = 'center', anim = 'slide_down' },
+  music_player  = { pos = 'top', anim = 'slide_down' },
+  sysmon        = { pos = 'top_right', anim = 'slide_down' },
+  sysinfo       = { pos = 'left', anim = 'slide_right' },   -- 从左侧滑入
+  color_picker  = { pos = 'bottom_right', anim = 'slide_up' },
+
   pomodoro = {
+    pos = 'bottom_left', anim = 'slide_up', -- 从底部弹出
     work_min = 25,
     break_min = 5,
   },
 
   clip_hist = {
+    pos = 'bottom', anim = 'slide_up',
     max_items = 30,
   },
 
   launcher = {
+    pos = 'top', anim = 'slide_down', -- dmenu 风格：贴顶
     entries = {
       { name = '终端', cmd = 'alacritty' },
       { name = '文件管理器', cmd = 'pcmanfm' },
@@ -146,6 +174,7 @@ return {
   },
 
   weather = {
+    pos = 'right', anim = 'slide_left', -- 从右侧滑入
     units = 'c',
     refresh_sec = 300, -- 300 seconds
 

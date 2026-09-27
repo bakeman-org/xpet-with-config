@@ -93,6 +93,7 @@ local ctx = {
   AUD = AUD,
   libc = libc,
   config = config,
+  config_path = CONFIG_PATH,
   dpy = d.dpy,
   screen = d.screen,
   root = d.root,
@@ -250,33 +251,49 @@ local function do_hot_reload(silent)
     font_changed = (a ~= b)
   end
 
-  local pet_changed = newcfg.pet_asset_dir ~= config.pet_asset_dir
+  local pet_changed = newcfg.pet_source ~= config.pet_source
+    or newcfg.pet_asset_dir ~= config.pet_asset_dir
     or (newcfg.scale_factor or 1) ~= (config.scale_factor or 1)
     or (newcfg.frame_duration or 200) ~= (config.frame_duration or 200)
 
   config = newcfg
   ctx.config = config
-  pet:set_config(config)
 
+  -- 每个阶段独立 pcall：任一阶段失败只丢该阶段，绝不带崩主循环
   if font_changed then
-    local new_ctx = load_font(config)
-    if new_ctx then
+    local okf, new_ft = pcall(load_font, config)
+    if okf and new_ft then
       FT.xft_done(ft_ctx)
-      ft_ctx = new_ctx
-      ctx.ft_ctx = new_ctx
+      ft_ctx = new_ft
+      ctx.ft_ctx = new_ft
       log('font reloaded')
     else
-      log('font reload failed, keeping old')
+      log('font reload failed, keeping old: %s', tostring(new_ft))
     end
   end
 
-  if pet_changed then
-    pet:reload_animations(config)
-    log('pet reloaded (scale=%s)', tostring(config.scale_factor))
+  local okp, perr = pcall(function()
+    pet:apply_config(config) -- pet_speed / pet_frozen 等轻量字段
+    if pet_changed then
+      pet:reload_animations(config)
+    end
+  end)
+  if not okp then
+    log('hot reload failed (pet): %s', tostring(perr))
+    if not silent then
+      ctx.show_bubble('reload: pet failed 😢')
+    end
   end
 
-  plugin_mgr.reload(ctx, config.plugins or {})
-  keybinds.rebuild(config)
+  local okr, rerr = pcall(plugin_mgr.reload, ctx, config.plugins or {})
+  if not okr then
+    log('hot reload failed (plugins): %s', tostring(rerr))
+  end
+
+  local okk, kerr = pcall(keybinds.rebuild, config)
+  if not okk then
+    log('hot reload failed (keybinds): %s', tostring(kerr))
+  end
 
   if not silent then
     ctx.show_bubble('hot reload done 🚀')
@@ -312,7 +329,8 @@ int clock_gettime(int clk, xp_timespec *tp);
 local ts = ffi.new('xp_timespec[1]')
 local function now_ms()
   libc.clock_gettime(1, ts) -- CLOCK_MONOTONIC
-  return ts[0].tv_sec * 1000 + ts[0].tv_nsec / 1e6
+  -- tonumber: cdata long 参与算术会传染成 cdata，下游 math.ceil 报 "number expected, got cdata"
+  return tonumber(ts[0].tv_sec) * 1000 + tonumber(ts[0].tv_nsec) / 1e6
 end
 
 log('xpet running')

@@ -57,6 +57,7 @@ function M.init(ctx)
     M.H = M.APPBAR + 14 + M.SEARCH_H + 12 + M.VROWS * M.ROW_H + 14
 
     M.panel = Panel.new(ctx, {
+        name = 'clip_hist',
         w = M.W,
         h = M.H,
         theme = THEME,

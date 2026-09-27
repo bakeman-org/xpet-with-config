@@ -177,54 +177,40 @@ local function rgba_to_frame(ctx, rgba, w, h)
   return { pix = pix, mask = mask, w = w, h = h }
 end
 
--- 掩码 pixmap 放大（depth 1）
-local function scale_mask_pixmap(ctx, src, w, h, scale)
-  local X11, dpy, root, bit_ = ctx.X11, ctx.dpy, ctx.root, bit
-  local dw, dh = w * scale, h * scale
-  local mask = X11.XCreatePixmap(dpy, root, dw, dh, 1)
-  local gc = X11.XCreateGC(dpy, mask, 0, nil)
-  local img = X11.XGetImage(dpy, src, 0, 0, w, h, 1, 2)
-  if img ~= nil then
-    X11.XSetForeground(dpy, gc, 0)
-    X11.XFillRectangle(dpy, mask, gc, 0, 0, dw, dh)
-    X11.XSetForeground(dpy, gc, 1)
-    for yy = 0, h - 1 do
-      for xx = 0, w - 1 do
-        if bit_.band(X11.XGetPixel(img, xx, yy), 1) == 1 then
-          X11.XFillRectangle(dpy, mask, gc, xx * scale, yy * scale, scale, scale)
-        end
-      end
+-- RGBA 最近邻重采样到 sw×sh（支持任意小数放大/缩小）
+local function resample_rgba(rgba, w, h, sw, sh)
+  local out = ffi.new('unsigned char[?]', sw * sh * 4)
+  for y = 0, sh - 1 do
+    local sy = math.min(h - 1, math.floor(y * h / sh))
+    local srow = sy * w * 4
+    local drow = y * sw * 4
+    for x = 0, sw - 1 do
+      local sx = math.min(w - 1, math.floor(x * w / sw))
+      local s = srow + sx * 4
+      local d = drow + x * 4
+      out[d] = rgba[s]
+      out[d + 1] = rgba[s + 1]
+      out[d + 2] = rgba[s + 2]
+      out[d + 3] = rgba[s + 3]
     end
-    X11.XDestroyImage(img)
   end
-  X11.XFreeGC(dpy, gc)
-  return mask
+  return out
 end
 
 local function frame_from_rgba(ctx, rgba, w, h, scale)
-  local frame = rgba_to_frame(ctx, rgba, w, h)
-  if not (frame and scale > 1) then
-    return frame
+  scale = tonumber(scale) or 1
+  if scale <= 0 then
+    scale = 1
   end
-  local X11, dpy, root = ctx.X11, ctx.dpy, ctx.root
-  local sw, sh = w, h
-  local sp = X11.XCreatePixmap(dpy, root, sw * scale, sh * scale, ctx.depth)
-  local gc = X11.XCreateGC(dpy, sp, 0, nil)
-  local img = X11.XGetImage(dpy, frame.pix, 0, 0, sw, sh, 0xFFFFFFFF, 2)
-  if img ~= nil then
-    for yy = 0, sh - 1 do
-      for xx = 0, sw - 1 do
-        X11.XSetForeground(dpy, gc, X11.XGetPixel(img, xx, yy))
-        X11.XFillRectangle(dpy, sp, gc, xx * scale, yy * scale, scale, scale)
-      end
-    end
-    X11.XDestroyImage(img)
+  if math.abs(scale - 1) < 0.001 then
+    return rgba_to_frame(ctx, rgba, w, h)
   end
-  X11.XFreeGC(dpy, gc)
-  local smask = scale_mask_pixmap(ctx, frame.mask, sw, sh, scale)
-  X11.XFreePixmap(dpy, frame.pix)
-  X11.XFreePixmap(dpy, frame.mask)
-  return { pix = sp, mask = smask, w = sw * scale, h = sh * scale }
+  local sw = math.max(1, math.floor(w * scale + 0.5))
+  local sh = math.max(1, math.floor(h * scale + 0.5))
+  if sw == w and sh == h then
+    return rgba_to_frame(ctx, rgba, w, h)
+  end
+  return rgba_to_frame(ctx, resample_rgba(rgba, w, h, sw, sh), sw, sh)
 end
 
 -- 小帧衬到大画布（底部居中，脚踩地面），保证所有帧同尺寸

@@ -1,4 +1,5 @@
 local M = {}
+local bit = require("bit")
 local Panel = require("core.panel")
 local Util = require("core.util")
 
@@ -24,6 +25,9 @@ local THEME = {
 
 local XK_Up = 0xff52
 local XK_Down = 0xff54
+local XK_e = 0x0065
+local XK_E = 0x0045
+local MOD1_MASK = 0x0008 -- alt
 
 function M.init(ctx)
     M.ctx = ctx
@@ -48,6 +52,7 @@ function M.init(ctx)
     M.H = 16 + M.SEARCH_H + 12 + M.VROWS * M.ROW_H + 14
 
     M.panel = Panel.new(ctx, {
+        name = 'launcher',
         w = M.W,
         h = M.H,
         theme = THEME,
@@ -66,7 +71,13 @@ function M.init(ctx)
             on_submit = function(v) M.submit(v) end,
             on_cancel = function() M.panel:hide() end,
         },
-        on_key = function(p, sym)
+        on_key = function(p, sym, ctrl, shift, text, state)
+            -- 键盘被面板 grab 期间全局快捷键收不到，Ctrl+Alt+E 在这里处理隐藏
+            local alt = state and bit.band(state, MOD1_MASK) ~= 0
+            if ctrl and alt and (sym == XK_e or sym == XK_E) then
+                p:hide()
+                return true
+            end
             if sym == XK_Up then
                 M.move_sel(-1)
                 return true

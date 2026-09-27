@@ -157,8 +157,8 @@ function M.init(ctx)
     M.redraw_accum   = REDRAW_MS
 
     M.panel = Panel.new(ctx, {
+        name = 'weather',
         w = M.W, h = M.H,
-        y_shown = 0,
         theme = THEME,
         draw = function(p) M.draw(p) end,
         on_show = function()

@@ -1,22 +1,13 @@
 return {
-  -- scale 支持任意小数（0.1 缩小 ~ 12 放大），最近邻采样
-  scale_factor = 2,
+  -- scale sugeested value range of 1-12, don't make it very big, or try it yourself
+  -- gif 画布 800x600：scale 1 = 800x600 窗口，scale 2 = 1600x1200（超过屏高，先用 1）
+  scale_factor = 0.01,
   pet_speed = 2,
   frame_duration = 200,
-  -- 启动时冻结宠物（不乱跑）；Ctrl+Alt+S 可手动切换
-  pet_frozen = true,
 
-  pet_source = 'xpm',
-  pet_asset_dir = 'assets/pets/bsd',
+  pet_source = 'png',
+  pet_asset_dir = 'assets/gif/2.gif', -- 单个 gif 文件；换 2.gif~7.gif 试其它动作
   audio_panel_dir = 'assets/music',
-
-  -- 面板默认位置与进场动画（单个面板可在 Panel opts 里覆盖）
-  -- pos: center/top/bottom/left/right/top_left/top_right/bottom_left/bottom_right
-  -- anim: auto/slide_down/slide_up/slide_left/slide_right/none
-  ui = {
-    pos = 'center',
-    anim = 'auto',
-  },
 
   font_path = '/home/etcix/.local/share/fonts/MiSans-Regular.ttf',
   font_size = 24,
@@ -145,8 +136,6 @@ return {
   },
 
   launcher = {
-    pos = 'top',        -- dmenu 风格：贴顶；想居中就删掉这行（回落到 ui.pos）
-    anim = 'slide_down',
     entries = {
       { name = '终端', cmd = 'alacritty' },
       { name = '文件管理器', cmd = 'pcmanfm' },
