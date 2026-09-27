@@ -31,7 +31,7 @@ return {
   },
 
   enable_audio = true,
-  click_audio_to_play = 'assets/audio/ciallo_1.mp3',
+  click_audio_to_play = 'assets/audio/zako_1.mp3',
 
   phrases = {
     'Get off the chair, you lazybones~ 😀',

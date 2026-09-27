@@ -1,6 +1,6 @@
 *.so
 # because it is mess so far
-assets/
+# assets/
 wget-log*
 prompt
 .editorconfig

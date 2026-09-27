@@ -57,7 +57,14 @@ luajit tools/check_asset.lua assets/pets/my_pet/
 # NOTICE
 - this project is not a fork of the original xpet-with-config, it is a reimplementation of it
 - clanker driven code, please be careful
+- feel free to PR or fork, I don't care because I don't have token anymore :(
 
 
 # TODO
 1. I will pack the program later by mockup.py, mainly provide for linux, if your system is not work, don't expect me to fix, ask clanker to fix for for you
+
+
+# ref links
+- thanks for original repo provided xpms: https://github.com/uint23/xpet 
+- thanks for chillhop provided musics: https://stream.chillhop.com/
+- zako ciallo audio you can find at, resource from the Internet: https://codeberg.org/etcix/momoisay-zako
